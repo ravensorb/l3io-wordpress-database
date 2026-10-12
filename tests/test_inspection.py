@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from l3io.wp.database.connection import Connection
 from l3io.wp.database.credentials import Explicit
-from l3io.wp.database.inspection import inspect
+from l3io.wp.database.errors import DatabaseUnreachableError
+from l3io.wp.database.inspection import inspect, survey
 from l3io.wp.database.state import ConnectionState
 
 
@@ -24,3 +27,8 @@ class _Unobtainable:
 def test_unobtainable_credentials_are_a_state() -> None:
     state = inspect(Connection(host="127.0.0.1", database="wp", port=1), _Unobtainable())
     assert state is ConnectionState.CREDENTIALS_UNOBTAINABLE
+
+
+def test_survey_of_an_unreachable_server_raises_a_package_error() -> None:
+    with pytest.raises(DatabaseUnreachableError):
+        survey(Connection(host="127.0.0.1", database="wp", port=1), Explicit("u", "p"))

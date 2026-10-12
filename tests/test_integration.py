@@ -304,3 +304,36 @@ def test_schema_version_with_custom_prefix_via_new_api(suffix: str) -> None:
     )
     version = schema_version(Connection(host=HOST, port=PORT, database=name), new_admin(), "xy_")
     assert version is not None and version.release == "6.7"
+
+
+def test_schema_version_with_wrong_password_is_an_authentication_failure(suffix: str) -> None:
+    from l3io.wp.database.errors import AuthenticationFailedError
+
+    name = f"wp_{suffix}"
+    admin_sql(
+        f"CREATE DATABASE `{name}`",
+        f"CREATE USER 'u_{suffix}'@'%' IDENTIFIED BY 'right'",
+        f"GRANT SELECT ON `{name}`.* TO 'u_{suffix}'@'%'",
+    )
+    with pytest.raises(AuthenticationFailedError):
+        schema_version(
+            Connection(host=HOST, port=PORT, database=name), Explicit(f"u_{suffix}", "wrong")
+        )
+
+
+def test_survey_without_select_on_options_raises_access_denied(suffix: str) -> None:
+    from l3io.wp.database.errors import AccessDeniedError
+
+    name = f"wp_{suffix}"
+    viewer = f"v_{suffix}"
+    admin_sql(
+        f"CREATE DATABASE `{name}`",
+        f"CREATE TABLE `{name}`.`wp_options` (option_name VARCHAR(191), option_value LONGTEXT)",
+        f"CREATE USER '{viewer}'@'%' IDENTIFIED BY 'p'",
+        f"GRANT SHOW VIEW ON `{name}`.* TO '{viewer}'@'%'",
+    )
+    try:
+        with pytest.raises(AccessDeniedError):
+            survey(Connection(host=HOST, port=PORT, database=name), Explicit(viewer, "p"))
+    finally:
+        admin_sql(f"DROP USER IF EXISTS '{viewer}'@'%'")

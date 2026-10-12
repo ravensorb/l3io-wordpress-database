@@ -6,16 +6,25 @@ errors are caught and re-raised as one of these, with ``raise ... from``.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 
-class WpDatabaseError(Exception):
+if TYPE_CHECKING:
+    from .verdict import Verdict
+
+
+class DatabaseError(Exception):
     """Base class for every error this package raises."""
 
 
-class InvalidArgumentsError(WpDatabaseError):
+#: Removed in Task 13 of plan 1, once nothing imports the old name.
+WpDatabaseError = DatabaseError
+
+
+class InvalidArgumentsError(DatabaseError):
     """An invalid combination of arguments was supplied."""
 
 
-class InvalidIdentifierError(WpDatabaseError):
+class InvalidIdentifierError(DatabaseError):
     """A database or user name is not usable as a MySQL identifier."""
 
     def __init__(self, kind: str, value: str, reason: str) -> None:
@@ -32,7 +41,7 @@ class InvalidDatabaseNameError(InvalidIdentifierError):
         super().__init__("database name", value, reason)
 
 
-class MissingDependencyError(WpDatabaseError):
+class MissingDependencyError(DatabaseError):
     """An optional feature was used without its extra installed.
 
     AD-8: optional dependencies are imported inside the function that needs
@@ -48,12 +57,25 @@ class MissingDependencyError(WpDatabaseError):
         )
 
 
-class CredentialsUnobtainableError(WpDatabaseError):
+class CredentialsUnobtainableError(DatabaseError):
     """Credentials could not be obtained from their source.
 
     Distinct from authentication failure: nothing was attempted against the
     database, because there was nothing to attempt it with.
     """
+
+
+class CredentialsAbsentError(DatabaseError):
+    """A credential source had nothing to offer.
+
+    Distinct from :class:`CredentialsUnobtainableError`: an unset variable is
+    absence, a refused AWS call is failure. A
+    :class:`~l3io.wp.database.CredentialChain` moves on only after absence.
+    """
+
+    def __init__(self, message: str, sources: tuple[str, ...] = ()) -> None:
+        self.sources = sources
+        super().__init__(message)
 
 
 class RegionNotKnownError(CredentialsUnobtainableError):
@@ -65,7 +87,7 @@ class RegionNotKnownError(CredentialsUnobtainableError):
         )
 
 
-class ConfigurationError(WpDatabaseError):
+class ConfigurationError(DatabaseError):
     """A WordPress configuration file could not be used."""
 
 
@@ -86,17 +108,30 @@ class MissingConfigValueError(ConfigurationError):
         super().__init__(f"{key} is not defined in {path!r}")
 
 
-class DatabaseUnreachableError(WpDatabaseError):
+class DatabaseUnreachableError(DatabaseError):
     """The database server could not be reached at all."""
 
 
-class AuthenticationFailedError(WpDatabaseError):
+class AuthenticationFailedError(DatabaseError):
     """The server was reached but rejected the supplied credentials."""
 
 
-class AccessDeniedError(WpDatabaseError):
+class AccessDeniedError(DatabaseError):
     """Authentication succeeded but the account may not use the database."""
 
 
-class ProvisioningError(WpDatabaseError):
-    """A provisioning statement failed."""
+class ProvisioningError(DatabaseError):
+    """A provisioning operation started and failed part-way."""
+
+    def __init__(self, message: str, completed: tuple[str, ...] = ()) -> None:
+        self.completed = completed
+        super().__init__(message)
+
+
+class RefusedError(DatabaseError):
+    """A check found a blocker, so the operation did not run."""
+
+    def __init__(self, verdict: Verdict) -> None:
+        self.verdict = verdict
+        reasons = "; ".join(f"{f.code}: {f.message}" for f in verdict.blockers)
+        super().__init__(f"{verdict.operation} refused: {reasons}")

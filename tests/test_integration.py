@@ -253,3 +253,54 @@ def test_no_credential_appears_in_logs_during_real_provisioning(suffix: str) -> 
     # The action list should name what happened without quoting the value.
     assert any("set password" in action for action in result.actions)
     assert all(secret not in action for action in result.actions)
+
+
+# --- new API (plan 1, task 9) ---------------------------------------------------
+from l3io.wp.database.connection import Connection  # noqa: E402
+from l3io.wp.database.credentials import Explicit  # noqa: E402
+from l3io.wp.database.inspection import schema_version, survey  # noqa: E402
+from l3io.wp.database.server import ServerFamily  # noqa: E402
+
+
+def new_admin() -> Explicit:
+    return Explicit(ADMIN_USER, ADMIN_PASSWORD)
+
+
+def test_survey_of_an_absent_database(suffix: str) -> None:
+    result = survey(Connection(host=HOST, port=PORT, database=f"wp_{suffix}"), new_admin())
+    assert result.database_exists is False
+    assert result.table_count == 0
+    assert result.is_wordpress is False
+    assert result.server.family in (ServerFamily.MYSQL, ServerFamily.MARIADB)
+
+
+def test_survey_of_a_wordpress_database(suffix: str) -> None:
+    name = f"wp_{suffix}"
+    admin_sql(
+        f"CREATE DATABASE `{name}`",
+        f"CREATE TABLE `{name}`.`xy_options` (option_name VARCHAR(191), option_value LONGTEXT)",
+        f"INSERT INTO `{name}`.`xy_options` VALUES ('db_version', '58975')",  # noqa: S608 - test fixture
+        f"CREATE USER 'u_{suffix}'@'%' IDENTIFIED BY 'p'",
+        f"GRANT SELECT ON `{name}`.* TO 'u_{suffix}'@'%'",
+    )
+    result = survey(
+        Connection(host=HOST, port=PORT, database=name),
+        new_admin(),
+        wordpress_user=f"u_{suffix}",
+        table_prefix="xy_",
+    )
+    assert result.database_exists and result.table_count == 1 and result.is_wordpress
+    assert result.schema_version is not None and result.schema_version.release == "6.7"
+    assert result.user_exists is True
+    assert result.user_privileges == frozenset({"SELECT"})
+
+
+def test_schema_version_with_custom_prefix_via_new_api(suffix: str) -> None:
+    name = f"wp_{suffix}"
+    admin_sql(
+        f"CREATE DATABASE `{name}`",
+        f"CREATE TABLE `{name}`.`xy_options` (option_name VARCHAR(191), option_value LONGTEXT)",
+        f"INSERT INTO `{name}`.`xy_options` VALUES ('db_version', '58975')",  # noqa: S608 - test fixture
+    )
+    version = schema_version(Connection(host=HOST, port=PORT, database=name), new_admin(), "xy_")
+    assert version is not None and version.release == "6.7"

@@ -64,7 +64,7 @@ def release_for(db_version: int) -> str | None:
 
 
 @dataclass(frozen=True, slots=True)
-class WpDatabaseVersion:
+class SchemaVersion:
     """A WordPress schema revision read from a site's options table."""
 
     db_version: int
@@ -100,3 +100,7 @@ class WpDatabaseVersion:
             return f"db_version {self.db_version} (no known release)"
         suffix = " or newer" if self.is_newer_than_known else ""
         return f"WordPress {self.release}{suffix} (db_version {self.db_version})"
+
+
+#: Removed in Task 13 of plan 1.
+WpDatabaseVersion = SchemaVersion

@@ -13,7 +13,7 @@ WordPress's own credentials live in its config and are the ones *created and
 granted*. Separate administrative credentials are used *only* to do the
 creating, and are never defaulted to the WordPress account.
 
-> **Status:** not yet published to any public index. `l3io-wp-config`, needed
+> **Status:** not yet published to any public index. `l3io-wordpress-config`, needed
 > only for the optional `wpconfig` extra, currently resolves from git. See
 > [Installing](#installing).
 
@@ -129,4 +129,4 @@ installed from PyPI at all.
 ## Licence
 
 MIT. A predecessor of this package was written by Cariad Eccleston; the
-`wp-config.php` reader it used lives on as `l3io-wp-config`.
+`wp-config.php` reader it used lives on as `l3io-wordpress-config`.

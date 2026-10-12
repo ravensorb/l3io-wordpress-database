@@ -4,7 +4,7 @@
 the old public API is preserved, and there is no compatibility shim. The table
 below maps every entry point that existed before onto its replacement.
 
-See [CHANGELOG.md](../CHANGELOG.md) for what changed and why.
+See [rewrite-notes.md](rewrite-notes.md) for what changed and why.
 
 
 | Before | After |

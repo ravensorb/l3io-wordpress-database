@@ -1,6 +1,6 @@
 """Read connection details out of a WordPress ``wp-config.php``.
 
-An adapter over ``l3io-wp-config``, which lives behind the ``wpconfig`` extra.
+An adapter over ``l3io-wordpress-config``, which lives behind the ``wpconfig`` extra.
 Per AD-1 the adapter *holds* the config object and exposes only what this
 package needs, rather than subclassing it -- subclassing would make every
 method of the underlying type public here automatically, so the declared
@@ -62,7 +62,9 @@ class WpConfigSource:
         try:
             from l3io.wp.config import MISSING, WpConfigError, WpConfigFile
         except ImportError as exc:
-            raise MissingDependencyError(extra="wpconfig", distribution="l3io-wp-config") from exc
+            raise MissingDependencyError(
+                extra="wpconfig", distribution="l3io-wordpress-config"
+            ) from exc
 
         self._missing = MISSING
         try:

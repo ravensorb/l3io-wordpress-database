@@ -101,6 +101,10 @@ dev = [
   # one thing this repo's rules will not tolerate is a hand-written YAML parser.
   "pyyaml==6.0.3",
   "types-pyyaml==6.0.12.20260906",
+  # tests/test_declared_facts.py compares requirement names, specifiers and
+  # versions. Declared directly rather than relied on through pytest's own
+  # dependency on it.
+  "packaging==26.3",
   # The optional extras are dev dependencies too, so a bare `uv run` can
   # exercise the code paths behind them. `uv run` syncs the default groups
   # only, which PRUNES extras -- without this, every `uv run` silently

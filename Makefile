@@ -30,7 +30,7 @@ INFISICAL_ENV ?= prod
 ACT_RUNNER ?= $(INFISICAL) run --projectId $(INFISICAL_PROJECT) --env $(INFISICAL_ENV) --
 
 .DEFAULT_GOAL := help
-.PHONY: help sync check lint format types test test-db contracts namespace-check build verify-wheel ci ci-job ci-list ci-dryrun ci-dryrun-one clean
+.PHONY: help sync check lint format types test test-db contracts namespace-check audit build verify-wheel ci ci-job ci-list ci-dryrun ci-dryrun-one clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -62,6 +62,9 @@ contracts: ## Architecture contracts (AD-27, AD-28)
 namespace-check: ## AD-27 alone, including sibling coexistence
 	$(UV) run pytest -q tests/test_architecture.py -k "namespace or coexist"
 
+audit: ## Scan uv.lock for known vulnerabilities (needs network; not part of check)
+	$(UV) audit --locked --preview-features audit
+
 build: ## Build wheel and sdist without development sources
 	rm -rf dist
 	$(UV) build --no-sources
@@ -79,7 +82,7 @@ verify-wheel: build ## Install the BUILT wheel into an isolated env and import i
 import importlib.util, sys; \
 [sys.exit('base install pulled ' + m) for m in ('boto3','botocore','l3io.wp.config') if importlib.util.find_spec(m) is not None]; \
 print('base install is clean')"; \
-	$(UV) run --isolated --no-project --with "$$wheel" l3io-wp-database --version
+	$(UV) run --isolated --no-project --with "$$wheel" l3io-wordpress-database --version
 
 ci: ## Replay the CI pipeline locally under act
 	$(ACT_RUNNER) $(ACT) $(ACT_FLAGS)

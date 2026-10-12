@@ -2,12 +2,12 @@
 
 The identifier helpers are public because AD-28 requires grant-target escaping
 to go through one shared function rather than being reimplemented inline.
-``l3io-wp-backup`` depends on this package and should import
+``l3io-wordpress-backup`` depends on this package and should import
 ``quote_grant_database`` from here instead of rewriting it.
 
 This is the only ``__init__.py`` above this directory in the distribution:
 ``l3io`` and ``l3io.wp`` are a PEP 420 native namespace shared with
-``l3io-wp-config`` and ``l3io-wp-backup`` (AD-27).
+``l3io-wordpress-config`` and ``l3io-wordpress-backup`` (AD-27).
 """
 
 from __future__ import annotations

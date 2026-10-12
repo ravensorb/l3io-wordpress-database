@@ -37,8 +37,8 @@ def test_namespace_ships_no_init_in_source_tree() -> None:
     present = [p for p in forbidden if p.exists()]
     assert not present, (
         f"PEP 420 namespace violated by {present}. These files make l3io a regular "
-        "package, shadowing the namespace and making l3io-wp-config and "
-        "l3io-wp-backup unimportable once installed alongside this one."
+        "package, shadowing the namespace and making l3io-wordpress-config and "
+        "l3io-wordpress-backup unimportable once installed alongside this one."
     )
 
 

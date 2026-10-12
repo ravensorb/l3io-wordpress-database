@@ -13,7 +13,7 @@ from typing import Any
 import pymysql
 
 from ._observe import operation
-from ._sql import ER_TABLEACCESS_DENIED, classify, error_code, open_connection
+from ._sql import ER_DBACCESS_DENIED, ER_TABLEACCESS_DENIED, classify, error_code, open_connection
 from .connection import Connection
 from .credentials import CredentialSource, ResolvedCredentials
 from .errors import (
@@ -47,16 +47,30 @@ def _resolve(source: CredentialSource) -> ResolvedCredentials:
     return source.resolve()
 
 
-def _admin_session(connection: Connection, admin: ResolvedCredentials) -> Any:
-    """An admin connection with no default database, or a package error."""
+def _connect_or_raise(
+    connection: Connection, credentials: ResolvedCredentials, database: str | None
+) -> Any:
+    """Open a session, or raise a package error saying why it could not be."""
     try:
-        return open_connection(connection, admin, database=None)
+        return open_connection(connection, credentials, database=database)
     except pymysql.err.MySQLError as exc:
         if classify(exc) is ConnectionState.AUTHENTICATION_FAILED:
-            msg = f"the administrator account {admin.username!r} was rejected"
+            msg = f"the account {credentials.username!r} was rejected"
             raise AuthenticationFailedError(msg) from exc
         msg = f"{connection.host}:{connection.port} could not be reached"
         raise DatabaseUnreachableError(msg) from exc
+
+
+def _admin_session(connection: Connection, admin: ResolvedCredentials) -> Any:
+    """An admin connection with no default database, or a package error."""
+    return _connect_or_raise(connection, admin, None)
+
+
+def _as_package_error(exc: pymysql.err.MySQLError) -> Exception:
+    """Translate a server error raised mid-session into a package-owned one."""
+    if error_code(exc) in (ER_TABLEACCESS_DENIED, ER_DBACCESS_DENIED):
+        return AccessDeniedError(f"the administrator lacks a privilege the survey needs: {exc}")
+    return DatabaseUnreachableError(f"the server failed during the survey: {exc}")
 
 
 def _read_schema_version(cursor: Any, database: str, table_prefix: str) -> SchemaVersion | None:
@@ -87,46 +101,51 @@ def survey(
     with operation("survey", connection) as fields:
         session = _admin_session(connection, _resolve(admin))
         database = connection.database
-        with session, session.cursor() as cur:
-            server = detect_server(cur)
-            cur.execute(
-                "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = %s",
-                (database,),
-            )
-            exists = int(cur.fetchone()[0]) > 0
-            cur.execute(
-                "SELECT COUNT(*), COALESCE(SUM(DATA_LENGTH + INDEX_LENGTH), 0) "
-                "FROM information_schema.TABLES WHERE TABLE_SCHEMA = %s",
-                (database,),
-            )
-            table_count, size_bytes = (int(v) for v in cur.fetchone())
-            cur.execute(
-                "SELECT COUNT(*) FROM information_schema.TABLES "
-                "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s",
-                (database, f"{table_prefix}options"),
-            )
-            is_wordpress = int(cur.fetchone()[0]) > 0
-            version = _read_schema_version(cur, database, table_prefix) if is_wordpress else None
-
-            user_exists: bool | None = None
-            user_privileges: frozenset[str] | None = None
-            if wordpress_user is not None:
-                validate_user_name(wordpress_user)
-                try:
-                    cur.execute(
-                        "SELECT COUNT(*) FROM mysql.user WHERE User = %s AND Host = %s",
-                        (wordpress_user, user_host),
-                    )
-                    user_exists = int(cur.fetchone()[0]) > 0
-                except pymysql.err.MySQLError as exc:
-                    if error_code(exc) != ER_TABLEACCESS_DENIED:
-                        raise
+        try:
+            with session, session.cursor() as cur:
+                server = detect_server(cur)
                 cur.execute(
-                    "SELECT PRIVILEGE_TYPE FROM information_schema.SCHEMA_PRIVILEGES "
-                    "WHERE GRANTEE = %s AND %s LIKE TABLE_SCHEMA",
-                    (grantee(wordpress_user, user_host), database),
+                    "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = %s",
+                    (database,),
                 )
-                user_privileges = frozenset(str(r[0]) for r in cur.fetchall())
+                exists = int(cur.fetchone()[0]) > 0
+                cur.execute(
+                    "SELECT COUNT(*), COALESCE(SUM(DATA_LENGTH + INDEX_LENGTH), 0) "
+                    "FROM information_schema.TABLES WHERE TABLE_SCHEMA = %s",
+                    (database,),
+                )
+                table_count, size_bytes = (int(v) for v in cur.fetchone())
+                cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.TABLES "
+                    "WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s",
+                    (database, f"{table_prefix}options"),
+                )
+                is_wordpress = int(cur.fetchone()[0]) > 0
+                version = (
+                    _read_schema_version(cur, database, table_prefix) if is_wordpress else None
+                )
+
+                user_exists: bool | None = None
+                user_privileges: frozenset[str] | None = None
+                if wordpress_user is not None:
+                    validate_user_name(wordpress_user)
+                    try:
+                        cur.execute(
+                            "SELECT COUNT(*) FROM mysql.user WHERE User = %s AND Host = %s",
+                            (wordpress_user, user_host),
+                        )
+                        user_exists = int(cur.fetchone()[0]) > 0
+                    except pymysql.err.MySQLError as exc:
+                        if error_code(exc) != ER_TABLEACCESS_DENIED:
+                            raise
+                    cur.execute(
+                        "SELECT PRIVILEGE_TYPE FROM information_schema.SCHEMA_PRIVILEGES "
+                        "WHERE GRANTEE = %s AND %s LIKE TABLE_SCHEMA",
+                        (grantee(wordpress_user, user_host), database),
+                    )
+                    user_privileges = frozenset(str(r[0]) for r in cur.fetchall())
+        except pymysql.err.MySQLError as exc:
+            raise _as_package_error(exc) from exc
         fields.update(database_exists=exists, table_count=table_count, is_wordpress=is_wordpress)
         return Survey(
             server,
@@ -165,11 +184,7 @@ def schema_version(
     """The WordPress schema revision recorded in the options table."""
     with operation("schema_version", connection):
         resolved = _resolve(credentials)
-        try:
-            session = open_connection(connection, resolved, database=connection.database)
-        except pymysql.err.MySQLError as exc:
-            msg = f"could not connect to read {table_prefix}options"
-            raise DatabaseUnreachableError(msg) from exc
+        session = _connect_or_raise(connection, resolved, connection.database)
         try:
             with session, session.cursor() as cur:
                 return _read_schema_version(cur, connection.database, table_prefix)

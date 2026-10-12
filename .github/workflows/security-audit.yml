@@ -1,0 +1,49 @@
+# l3io-wordpress-database dependency audit (FR-45).
+#
+# Scans uv.lock against the OSV advisory database with `uv audit`. Native to the
+# uv already pinned by `required-version`, so no extra tool or export step, and
+# it reads the lock directly rather than a re-resolution of it.
+#
+# WHAT IT AUDITS: every package in uv.lock -- runtime dependencies, every extra
+# (aws, wpconfig) and the dev group, which is the CI toolchain. uv audits all of
+# them by default; nothing here narrows it. Verified 2026-10-12 against planted
+# vulnerable pins: a vulnerable package reached only through an extra, and one
+# reached only through the dev group, each made it exit 1. So the gate is not
+# vacuous for a package with no runtime dependencies.
+#
+# `uv audit` is a preview feature in uv 0.11.6. `--preview-features audit` opts
+# in explicitly; the uv version is pinned, so its behaviour cannot shift under
+# this workflow without a deliberate bump of `required-version`.
+#
+# A separate workflow, not a ci.yml job, because advisories appear without any
+# commit: the weekly schedule is the point, and re-running the full engine
+# matrix on a timer to get it would be waste.
+
+name: Security audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: uv audit
+    runs-on: ubuntu-latest
+    env:
+      UV_PROJECT_ENVIRONMENT: /tmp/l3io-venv-audit
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }  # hatch-vcs needs tags; shallow yields 0.1.devN
+      - uses: astral-sh/setup-uv@v10.1.0  # no floating v10 ref exists; see ci.yml
+        with:
+          version: "0.11.6"
+          enable-cache: ${{ !vars.LOCAL_ACT }}
+      - name: audit the lock
+        run: uv audit --locked --preview-features audit

@@ -59,6 +59,22 @@
       "inputs": {
         "target": "pypi"
       }
+    },
+    {
+      "workflow": "security-audit.yml",
+      "event": "push"
+    },
+    {
+      "workflow": "security-audit.yml",
+      "event": "pull_request"
+    },
+    {
+      "workflow": "security-audit.yml",
+      "event": "schedule"
+    },
+    {
+      "workflow": "security-audit.yml",
+      "event": "workflow_dispatch"
     }
   ]
 }

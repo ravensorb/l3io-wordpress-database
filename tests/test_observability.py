@@ -87,7 +87,20 @@ def test_span_nests_under_the_callers_span() -> None:
     assert child.attributes["db.name"] == "wp_site"
 
 
-@pytest.mark.parametrize("reserved", ["event", "operation", "outcome", "duration_ms", "database"])
+# Expected logged value per reserved key; None means "any float" (duration_ms).
+_RESERVED_VALUES: dict[str, str | None] = {
+    "event": "operation complete",
+    "operation": "drop_database",
+    "outcome": "refused",
+    "duration_ms": None,
+    "database": "wp_site",
+}
+
+
+@pytest.mark.parametrize(
+    "reserved",
+    ["event", "operation", "outcome", "duration_ms", "database", "self", "method_name"],
+)
 def test_caller_field_named_like_a_reserved_key_cannot_mask_the_refusal(
     logs: LogCapture, reserved: str
 ) -> None:
@@ -95,14 +108,21 @@ def test_caller_field_named_like_a_reserved_key_cannot_mask_the_refusal(
     with pytest.raises(RefusedError), operation("drop_database", CONN) as fields:
         fields[reserved] = "x"
         raise RefusedError(verdict)
-    expected = {
-        "event": "operation complete",
-        "operation": "drop_database",
-        "outcome": "refused",
-        "database": "wp_site",
-    }
     record = logs.entries[-1]
-    if reserved == "duration_ms":
-        assert isinstance(record[reserved], float)
+    if reserved in _RESERVED_VALUES:
+        expected = _RESERVED_VALUES[reserved]
+        if expected is None:
+            assert isinstance(record[reserved], float)
+        else:
+            assert record[reserved] == expected
     else:
-        assert record[reserved] == expected[reserved]
+        assert record.get(reserved) != "x"
+    assert record["outcome"] == "refused"
+
+
+def test_caller_field_named_self_completes_on_the_success_path(logs: LogCapture) -> None:
+    with operation("survey", CONN) as fields:
+        fields["self"] = "x"
+    record = logs.entries[-1]
+    assert record["outcome"] == "succeeded"
+    assert record.get("self") != "x"

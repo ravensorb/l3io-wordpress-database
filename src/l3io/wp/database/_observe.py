@@ -42,6 +42,11 @@ def operation(name: str, connection: Connection) -> Iterator[dict[str, object]]:
         _complete(name, connection, "succeeded", started, fields)
 
 
+#: Parameter names of structlog's call chain (BoundLogger method and _proxy_to_logger).
+#: A caller field with one of these names would collide when passed as a keyword.
+_STRUCTLOG_PARAMETERS = frozenset({"self", "method_name"})
+
+
 def _complete(
     name: str, connection: Connection, outcome: str, started: float, fields: dict[str, object]
 ) -> None:
@@ -49,8 +54,9 @@ def _complete(
     # must never raise here, because this runs inside the exception handlers.
     # The event name is structlog's first positional parameter, so it travels as a
     # keyword too; otherwise a caller field named "event" collides with it.
+    caller_fields = {k: v for k, v in fields.items() if k not in _STRUCTLOG_PARAMETERS}
     event: dict[str, object] = {
-        **fields,
+        **caller_fields,
         "event": "operation complete",
         "operation": name,
         "outcome": outcome,

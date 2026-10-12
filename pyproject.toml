@@ -81,14 +81,14 @@ required-version = "==0.11.6"
 # The NAME changed with it. The sibling is `l3io-wordpress-config` now, and the old
 # rev predates that rename -- so keeping the rev would have pinned a commit whose
 # metadata still declared `l3io-wordpress-config`, which is not the name declared below.
-l3io-wordpress-config = { git = "https://github.com/ravensorb/py-wpconfigr.git", tag = "v0.0.2" }
+l3io-wordpress-config = { git = "https://github.com/ravensorb/l3io-wordpress-config.git", tag = "v0.0.2" }
 
 [project.scripts]
 l3io-wordpress-database = "l3io.wp.database.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/ravensorb/py-wordpress-database"
-Source = "https://github.com/ravensorb/py-wordpress-database"
+Homepage = "https://github.com/ravensorb/l3io-wordpress-database"
+Source = "https://github.com/ravensorb/l3io-wordpress-database"
 
 [dependency-groups]
 dev = [

@@ -2,8 +2,8 @@
   "action": "published",
   "release": { "tag_name": "v1.0.0", "prerelease": false },
   "repository": {
-    "full_name": "ravensorb/py-wordpress-database",
-    "name": "py-wordpress-database",
+    "full_name": "ravensorb/l3io-wordpress-database",
+    "name": "l3io-wordpress-database",
     "owner": { "login": "ravensorb" }
   }
 }

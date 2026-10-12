@@ -26,7 +26,7 @@ namespace `l3io.wp.database`, nothing preserved from the old surface, no shim.
    here before re-deciding anything.
 4. `CHANGELOG.md` — every behaviour change, including one the upstream handoff asked for that
    was rejected with evidence.
-5. The family's architecture spine and ADRs live in **`py-wordpress-backup`**, not here:
+5. The family's architecture spine and ADRs live in **`l3io-wordpress-backup`**, not here:
    `_bmad-output/planning-artifacts/architecture/.../ARCHITECTURE-SPINE.md` (29 invariants,
    AD-n) and `docs/adr/`. AD-2, AD-8, AD-9, AD-14, AD-27, AD-28, AD-29 bind this package.
 

@@ -15,7 +15,9 @@ essentially every WordPress database is named with an underscore, the original
 
 from __future__ import annotations
 
-from .errors import InvalidDatabaseNameError, InvalidIdentifierError
+import re
+
+from .errors import InvalidArgumentsError, InvalidDatabaseNameError, InvalidIdentifierError
 
 #: MySQL caps database names at 64 characters. MariaDB allows longer user names
 #: than MySQL's 32, so the stricter MySQL limit is applied to both.
@@ -58,12 +60,35 @@ def quote_identifier(name: str) -> str:
     return "`" + name.replace("`", "``") + "`"
 
 
+def grant_pattern(name: str) -> str:
+    """The database name as the ``LIKE`` pattern a GRANT stores, unquoted.
+
+    ``information_schema.SCHEMA_PRIVILEGES.TABLE_SCHEMA`` holds this form, so
+    comparing against it finds exactly the grant :func:`quote_grant_database`
+    wrote.
+    """
+    return name.replace("\\", "\\\\").replace("_", r"\_").replace("%", r"\%")
+
+
 def quote_grant_database(name: str) -> str:
     """Quote a database name for the ``ON <db>.*`` clause of a GRANT.
 
     The clause is matched as a ``LIKE`` pattern, so ``_`` and ``%`` must be
-    escaped or the grant silently widens to every database matching the
-    pattern. This is the fix for the defect described in the module docstring.
+    escaped or the grant silently widens to every database matching it.
     """
-    escaped = name.replace("\\", "\\\\").replace("_", r"\_").replace("%", r"\%")
-    return quote_identifier(escaped)
+    return quote_identifier(grant_pattern(name))
+
+
+_CHARSET = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def validate_charset(value: str, kind: str) -> str:
+    """Return a character set or collation name, or raise.
+
+    These cannot be parameterised, so they are restricted to the characters
+    every real name uses.
+    """
+    if not isinstance(value, str) or not _CHARSET.match(value):
+        msg = f"{kind} {value!r} is not a valid name"
+        raise InvalidArgumentsError(msg)
+    return value

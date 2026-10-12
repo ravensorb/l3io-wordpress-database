@@ -133,3 +133,59 @@ against `git.ravenwolf.org`. No values anywhere in this repo.
   recommendation, not a decision**. Shawn has not ruled.
 - The claim that FR-29's correlation identifier "adds little" is **a reviewer's argument I
   found persuasive**, not a tested conclusion.
+
+---
+
+## Update — 2026-10-12: rename, BMad 3.2.4, and the hardening brief
+
+### Done since 2026-09-27
+
+- [done] **Repository renamed** on GitHub `ravensorb/py-wordpress-database` →
+  `ravensorb/l3io-wordpress-database` (GitHub redirects the old URL), and the local folder to
+  `l3io-wordpress-database`. `a62958d` moves the live references: project URLs, the
+  `l3io-wordpress-config` uv git source (now `ravensorb/l3io-wordpress-config.git`, still
+  `tag = "v0.0.2"`, still commit `1cf1894`), `uv.lock`, act events, BMad `project_name`.
+- [done] l3io 3.2.4 was already committed (`d20c419`). `2895ed1` self-installs
+  `_bmad/scripts/pm-status.py` 3.4.2, which the module upgrade had left at 3.2.1. All three
+  repos now carry the same copy.
+- [done] **Verified 2026-10-12 after the rename**, on a fresh `uv sync --locked --all-extras --dev`:
+  `pytest` 107 passed, 13 skipped (integration, no `DB_HOST`);
+  `../l3io-wordpress-backup/scripts/check-cicd-alignment.py` 3 repos, 0 findings.
+- [todo] **Not pushed.** `main` is 3 commits ahead of `origin/main`. Last green GitHub CI:
+  `70aa7a0`.
+
+### Known stale in this file and in `AGENTS.md`
+
+- The "commit and push three uncommitted changes … tag `v1.5.0`" item above is superseded:
+  the pin is `tag = "v0.0.2"`, committed.
+- `AGENTS.md` and the sibling names above still say `l3io-wp-config` / `l3io-wp-backup` and
+  "pinned to a git rev". The distributions are `l3io-wordpress-config` /
+  `l3io-wordpress-backup`, and the pin is a tag. `AGENTS.md`'s block is managed by
+  `bmad-project-context`; refresh it rather than hand-editing inside the markers.
+
+### This session's brief
+
+Shawn's goal: make this package **rock solid and stable**. It is release 2 of 3; config goes
+first. Suggested order:
+
+1. `/l3io-doctor`, then reconcile this file against the repo. Everything tagged above
+   predates 2026-10-12.
+2. Close the open `[todo]` items that are mechanical gaps under the global rules:
+   **FR-48** (`requires-python` vs CI matrices, three hand-kept copies), **FR-50** (scripted
+   name-conflict release gate), **FR-45** (no dependency/lock audit), and **G5** (no MySQL 9.x
+   leg).
+3. Re-test the **MariaDB 10.2 floor** before encoding it anywhere; it is still unverified.
+4. Decisions that stay Shawn's: FR-23 (second credential provider), FR-29 (correlation id;
+   build or retire), the legacy `v1.0` tag, the retired-name `v0.0.1` assets, and the
+   architecture-record location.
+
+### Notes for this session
+
+- Secrets: Infisical, project **`home-lab-discovery`**; this machine has a machine identity
+  configured and the session is approved to read from it. Pass `--env=prod`; without it
+  `infisical secrets get` returns empty with exit 0.
+- Legacy PyPI `wpdatabase2` 0.0.15 is ours and still links the old URL, which redirects.
+  Its tombstone plan is in
+  `../l3io-wordpress-backup/_bmad-output/implementation-artifacts/handoffs/04-legacy-names-and-registrations.md`.
+- PyPI trusted publishing binds owner/repo/workflow. `l3io-wordpress-database` does not exist
+  on PyPI or TestPyPI (checked 2026-10-12), so register any publisher under the **new** name.

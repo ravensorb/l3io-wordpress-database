@@ -90,6 +90,8 @@ capability. Scope decisions in this document should be read against that.
 - **G3** — Be installable from PyPI with no git dependencies and no broken pins.
 - **G4** — Make correctness observable: structured logs and tracing as first-class features.
 - **G5** — Support current database servers: MySQL 8.x, MySQL 9.x, MariaDB.
+  **MET 2026-10-12 (`bb89bba`)** — `mysql:9.7` added to the CI matrix, with `mariadb:10.2` as
+  the NFR-4 floor leg; 9.0.1 and 9.7.2 pass all 13 integration tests locally. Before that:
   **PARTIALLY MET — MySQL 9.x is not tested.** The shipped matrix is `mysql:8.0`, `mysql:8.4`
   and `mariadb:11.4`. This matters more than a missing row: FR-8 and FR-9 exist *because* 9.0
   removed `mysql_native_password`, so the requirement driving the SQL design is the one
@@ -352,7 +354,10 @@ deliberately downscaled — no personas, no narrated journeys. Correct or replac
   installable.** `pip install --dry-run wpdatabase2` fails with `ResolutionImpossible` after
   walking back through all thirteen published versions, so 1.0.0 will be the first
   installable release and the release notes must say so plainly.
-- **FR-50** — **DEFERRED — NOT IMPLEMENTED.** Name conflict verification is a release gate,
+- **FR-50** — **MET 2026-10-12 (`57a9c77`)** — `tools/check_name_claim.py` runs before both
+  pypa uploads in `publish.yml`; a test asserts every upload step is gated for its own index.
+  Covers PyPI and TestPyPI, canonical and separator-stripped names; the Gitea mirror is out
+  of scope (org-namespaced). Previously: **DEFERRED — NOT IMPLEMENTED.** Name conflict verification is a release gate,
   not a one-time check: before publishing, the distribution name is confirmed to resolve to
   this project on PyPI and on the Gitea registry from FR-47, and normalized-name neighbours
   are re-checked. The check is scripted, not performed from memory.
@@ -376,7 +381,7 @@ deliberately downscaled — no personas, no narrated journeys. Correct or replac
   > guards including a two-distribution coexistence test, and AD-28 identifier escaping.
 - **FR-38** — Integration tests run against real MySQL and MariaDB in containers, covering
   the auth-plugin and `CREATE USER` divergences in FR-8 and FR-9. **Shipped as 8.0 / 8.4 /
-  MariaDB 11.4 — no 9.x leg**, per G5.
+  MariaDB 11.4 — no 9.x leg**, per G5. 9.7 and MariaDB 10.2 added 2026-10-12.
 - **FR-39** — `README.md` is corrected. Its install instructions are currently unrunnable and
   its library example (`WpDatabase('path to wp-config.php')`) raises `InvalidArgumentsError`,
   because the constructor requires a `WpConfigFile` instance.
@@ -416,7 +421,10 @@ whose workflows these requirements conform to rather than reinvent.
 - **FR-44** — Local-versus-CI behavioural differences are expressed through **workflow
   variables** and a committed `.act.vars`, following the existing `vars.PUBLISH` convention —
   not through `if: env.ACT` branching. One code path, different inputs.
-- **FR-45** — **PARTIALLY MET.** Workflow layout mirrors the house set: `ci` (lint and test),
+- **FR-45** — **PARTIALLY MET; the substantive gap closed 2026-10-12 (`cc107fb`)** —
+  `security-audit.yml` runs `uv audit --locked` over the whole lock (runtime, extras, dev
+  group) on push, PR, weekly and dispatch. `release.yml` also exists now. Still no separate
+  `build-python` workflow. Original assessment: **PARTIALLY MET.** Workflow layout mirrors the house set: `ci` (lint and test),
   `build-python`, `release`, and `security-audit`.
   > Shipped: `ci.yml` and `publish.yml` only. `build` and `verify-install` are *jobs* inside
   > `ci.yml` rather than a separate `build-python` workflow; there is **no `release` workflow**
@@ -441,7 +449,10 @@ whose workflows these requirements conform to rather than reinvent.
   > idempotent (the check URL is the authenticated index and the check does not receive the
   > publish credentials, so it 409s anyway), and a release job must not depend on the mirror
   > job or a mirror problem costs a release.
-- **FR-48** — **DEFERRED — NOT IMPLEMENTED.** The supported-Python set is declared **once**
+- **FR-48** — **MET 2026-10-12 (`0c4e3cf`), as a check rather than a derivation** —
+  `tests/test_declared_facts.py` fails when any workflow's Python matrix differs from the
+  classifiers, or `requires-python`'s floor differs from the lowest classifier. Matrices are
+  found by globbing every workflow. Previously: **DEFERRED — NOT IMPLEMENTED.** The supported-Python set is declared **once**
   and derived wherever else it is needed, so `requires-python` and the CI matrix cannot drift
   apart. A check fails when they disagree.
   > No such check exists. `requires-python = ">=3.11"` lives in `pyproject.toml` while
@@ -482,7 +493,9 @@ whose workflows these requirements conform to rather than reinvent.
   > extra to install, and `ConnectionState` making the six outcomes distinguishable. Treat the
   > prose as intent and those three as the enforcement.
 - **NFR-4 — Compatibility matrix.** MySQL 8.x, MySQL 9.x, MariaDB, each exercised in CI.
-  **Corrected: the MariaDB floor is 10.2, not 10.1.** `CREATE USER ... IF NOT EXISTS` works
+  **Corrected: the MariaDB floor is 10.2, not 10.1** — re-verified 2026-10-12 against real
+  servers: 10.1.48 fails 6 of 13 integration tests on `ALTER USER` (`ERROR 1064`), 10.2.44
+  passes all 13. 10.2 is now a CI leg. `CREATE USER ... IF NOT EXISTS` works
   on 10.1.48 but `ALTER USER` fails there with `ERROR 1064`, and the FR-8 sequence needs
   both — the original floor was derived from one statement of four.
   > Shipped CI matrix: `mysql:8.0`, `mysql:8.4`, `mariadb:11.4` × Python 3.11/3.12/3.13.
@@ -559,12 +572,22 @@ Reconciled 2026-09-26. Resolved items keep their number so earlier references st
     namespaced package (`l3io.wp.database.WpDatabase`), and the CLI kept the predecessor's
     verbose flags. Both are mechanical to change and nothing depends on the current names,
     since there is no shim.
-14. **FR-50's scripted name-conflict gate — OPEN.** Deferred, so the release path currently
-    relies on memory.
+14. ~~**FR-50's scripted name-conflict gate.**~~ **RESOLVED 2026-10-12** — see FR-50.
 15. **AD-15 resolvability — OPEN and gating any PyPI release.** `l3io-wp-config` is tagged,
     released and mirrored, but not on PyPI. Publication must go bottom-up.
 
 ## 11. Shipped state
+
+> **Superseded in part, 2026-10-12 (at `13eb4c2`).** This table describes `945069bf`.
+> Known to have changed since, each verified on the date above: the distribution is
+> **`l3io-wordpress-database`** (renamed `3da6f38`) and the repository
+> `ravensorb/l3io-wordpress-database`; the siblings are `l3io-wordpress-config` and
+> `l3io-wordpress-backup`. **Releases exist**: `v0.0.1` (built as `l3io-wp-database`) and
+> `v0.0.2` are GitHub Releases, and both are on the Gitea `liquidlogiclabs` index, published
+> 2026-09-30; neither name is on PyPI or TestPyPI. Servers verified: add MySQL 9.0/9.7 and
+> MariaDB 10.2. Tests: 128 unit/contract + 13 integration; `mypy --strict` over 27 files.
+> CI: the engine matrix is five engines, plus a `security-audit` workflow. Rows below that
+> contradict this note are stale; the rest were not re-checked.
 
 What exists on `main` at `945069bf`, with the evidence. This section is the answer to "does
 the spec match the code" — it is deliberately verifiable rather than descriptive.

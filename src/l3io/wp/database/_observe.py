@@ -47,11 +47,14 @@ def _complete(
 ) -> None:
     # One dict, reserved keys written last: a caller field with a colliding name
     # must never raise here, because this runs inside the exception handlers.
+    # The event name is structlog's first positional parameter, so it travels as a
+    # keyword too; otherwise a caller field named "event" collides with it.
     event: dict[str, object] = {
         **fields,
+        "event": "operation complete",
         "operation": name,
         "outcome": outcome,
         "duration_ms": round((time.monotonic() - started) * 1000, 1),
         "database": connection.database,
     }
-    _log.info("operation complete", **event)
+    _log.info(**event)

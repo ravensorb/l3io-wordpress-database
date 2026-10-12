@@ -87,11 +87,22 @@ def test_span_nests_under_the_callers_span() -> None:
     assert child.attributes["db.name"] == "wp_site"
 
 
+@pytest.mark.parametrize("reserved", ["event", "operation", "outcome", "duration_ms", "database"])
 def test_caller_field_named_like_a_reserved_key_cannot_mask_the_refusal(
-    logs: LogCapture,
+    logs: LogCapture, reserved: str
 ) -> None:
     verdict = Verdict("drop_database", (Finding(Code.CONFIRMATION_MISMATCH, "no"),))
     with pytest.raises(RefusedError), operation("drop_database", CONN) as fields:
-        fields["outcome"] = "x"
+        fields[reserved] = "x"
         raise RefusedError(verdict)
-    assert logs.entries[-1]["outcome"] == "refused"
+    expected = {
+        "event": "operation complete",
+        "operation": "drop_database",
+        "outcome": "refused",
+        "database": "wp_site",
+    }
+    record = logs.entries[-1]
+    if reserved == "duration_ms":
+        assert isinstance(record[reserved], float)
+    else:
+        assert record[reserved] == expected[reserved]

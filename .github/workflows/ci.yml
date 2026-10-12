@@ -129,10 +129,21 @@ jobs:
         # an 8.4-only matrix never exercises the auth-plugin divergence the
         # matrix exists to catch. It left Extended Support on 2026-04-30 and is
         # carried deliberately, because WordPress hosts still run it.
+        #
+        # 9.7 is the 9.x LTS, the generation FR-8/FR-9 exist for: 9.0 removed
+        # mysql_native_password outright. Exact tag, because `mysql:lts` moves.
+        #
+        # mariadb:10.2 is the FLOOR leg (NFR-4), not a popularity pick. Verified
+        # 2026-10-12: 10.1.48 rejects ALTER USER with ERROR 1064 and fails six of
+        # the thirteen integration tests; 10.2.44 passes all thirteen. This leg is
+        # what keeps that floor true rather than remembered.
+        # Its probe is mysqladmin, not healthcheck.sh: the 10.2 image's script has
+        # no credentials file and fails with ERROR 1045. A TCP ping is not early,
+        # because the entrypoint's bootstrap server listens on the socket only.
         engine: >-
           ${{ vars.LOCAL_ACT
               && fromJSON('[{"name":"mysql80","image":"mysql:8.0","health":"mysqladmin ping -h 127.0.0.1 -uroot -proot"}]')
-              || fromJSON('[{"name":"mysql80","image":"mysql:8.0","health":"mysqladmin ping -h 127.0.0.1 -uroot -proot"},{"name":"mysql84","image":"mysql:8.4","health":"mysqladmin ping -h 127.0.0.1 -uroot -proot"},{"name":"mariadb","image":"mariadb:11.4","health":"healthcheck.sh --connect --innodb_initialized"}]') }}
+              || fromJSON('[{"name":"mysql80","image":"mysql:8.0","health":"mysqladmin ping -h 127.0.0.1 -uroot -proot"},{"name":"mysql84","image":"mysql:8.4","health":"mysqladmin ping -h 127.0.0.1 -uroot -proot"},{"name":"mysql97","image":"mysql:9.7","health":"mysqladmin ping -h 127.0.0.1 -uroot -proot"},{"name":"mariadb","image":"mariadb:11.4","health":"healthcheck.sh --connect --innodb_initialized"},{"name":"mariadb102","image":"mariadb:10.2","health":"mysqladmin ping -h 127.0.0.1 -uroot -proot"}]') }}
     services:
       db:
         image: ${{ matrix.engine.image }}
@@ -186,7 +197,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.1.0  # no floating v10 ref exists; see comment at top
         with:
           version: "0.11.6"
-      # --no-sources is required, not cosmetic: l3io-wp-config is consumed from
+      # --no-sources is required, not cosmetic: l3io-wordpress-config is consumed from
       # git during development, and a VCS dependency reaching published
       # metadata is exactly the defect that left the predecessor package
       # unresolvable for six years.

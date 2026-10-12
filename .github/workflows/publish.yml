@@ -117,7 +117,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.1.0
         with:
           version: "0.11.6"
-      # --no-sources is load-bearing: l3io-wp-config is consumed from a git rev
+      # --no-sources is load-bearing: l3io-wordpress-config is consumed from a git rev
       # during development, and a VCS dependency in published metadata is the
       # defect that left the predecessor package unresolvable for six years.
       - run: uv build --no-sources
@@ -479,6 +479,13 @@ jobs:
     permissions:
       id-token: write
     steps:
+      # FR-50: refuse a name someone else holds, before the upload burns it.
+      # Needs the checkout for pyproject.toml; the runner's python3 is enough,
+      # because the gate is stdlib-only.
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }  # hatch-vcs needs tags; shallow yields 0.1.devN
+      - name: the name is unclaimed or ours
+        run: python3 tools/check_name_claim.py --index testpypi
       - uses: actions/download-artifact@v8
         with: { name: dist, path: dist }
       - uses: pypa/gh-action-pypi-publish@release/v1
@@ -490,7 +497,7 @@ jobs:
     # takes a deliberate dispatch with the target named explicitly.
     #
     # Nothing may go to PyPI until every dependency beneath it can resolve from
-    # PyPI too: publishing this while l3io-wp-config exists only on the internal
+    # PyPI too: publishing this while l3io-wordpress-config exists only on the internal
     # registry would make `pip install l3io-wordpress-database[wpconfig]` unresolvable,
     # reproducing the outage this rewrite exists to repair.
     name: PyPI
@@ -501,6 +508,13 @@ jobs:
     permissions:
       id-token: write
     steps:
+      # FR-50: refuse a name someone else holds, before the upload burns it.
+      # Needs the checkout for pyproject.toml; the runner's python3 is enough,
+      # because the gate is stdlib-only.
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }  # hatch-vcs needs tags; shallow yields 0.1.devN
+      - name: the name is unclaimed or ours
+        run: python3 tools/check_name_claim.py --index pypi
       - uses: actions/download-artifact@v8
         with: { name: dist, path: dist }
       - uses: pypa/gh-action-pypi-publish@release/v1

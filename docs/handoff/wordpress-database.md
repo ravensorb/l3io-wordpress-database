@@ -216,8 +216,9 @@ new security-audit legs included; `security-audit.yml` ran clean under act;
   fails on the first two classes. **Nothing checks Markdown links.**
 - [todo] **Push**, then confirm the five-engine matrix on GitHub. The 9.7 and 10.2 legs have
   been verified locally against the same images, but never on a GitHub runner.
-- [todo] `AGENTS.md` refresh drafted (names, rev→tag, one stale caveat), awaiting
-  approval; the bmad-project-context skill writes only after approval.
+- [done] `AGENTS.md` refresh approved and applied: sibling names, rev→tag, and the
+  `__init__.py` caveat (now caught in this repo alone). Provenance: 2026-10-12 against
+  `6c8c423`.
 - [todo — Shawn's] **3.14 support, family-wide.** Config's matrices run 3.11–3.14 but its
   classifiers stop at 3.13, so config's port of the FR-48 check fails until Shawn decides.
   Database runs 3.11–3.13 and agrees with itself.

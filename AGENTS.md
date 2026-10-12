@@ -1,13 +1,13 @@
 <!-- bmad:context -->
-<!-- Verified 2026-09-17 against e82e6aa plus the rewrite on feat/l3io-wordpress-database.
+<!-- Verified 2026-10-12 against 6c8c423.
      Managed by bmad-project-context; edits inside this block are replaced on
      refresh. Keep anything you want preserved outside the markers. -->
 
 ## l3io-wordpress-database
 
 Creates and inspects WordPress MySQL databases and their users, idempotently.
-Imports as `l3io.wp.database`, a PEP 420 namespace shared with `l3io-wp-config`
-and `l3io-wp-backup`. Python 3.11+, uv, ruff, mypy --strict, PyMySQL.
+Imports as `l3io.wp.database`, a PEP 420 namespace shared with
+`l3io-wordpress-config` and `l3io-wordpress-backup`. Python 3.11+, uv, ruff, mypy --strict, PyMySQL.
 Planning artifacts live in `_bmad-output/planning-artifacts/`.
 
 ## Policy
@@ -16,7 +16,8 @@ Planning artifacts live in `_bmad-output/planning-artifacts/`.
   regular package, shadowing the namespace and making both sibling
   distributions unimportable. `mypy` will actively suggest adding one; the fix
   is `mypy_path` + `explicit_package_bases` + `namespace_packages`, never the
-  file. A contract test catches it, but only once two packages are installed.
+  file. `tests/test_architecture.py` and a CI step fail on it in this repo alone;
+  the sibling breakage it causes only shows once two packages are installed.
 - Never publish. Releases are Shawn's, and the Gitea registry is temporary
   staging — PyPI comes after all three packages are refactored, bottom-up.
 
@@ -43,7 +44,7 @@ Planning artifacts live in `_bmad-output/planning-artifacts/`.
 
 ## Conventions that differ from defaults
 
-- `l3io-wp-config` is pinned to a git rev in `[tool.uv.sources]` and must never
+- `l3io-wordpress-config` is pinned to a git tag in `[tool.uv.sources]` and must never
   reach a release. `uv build --no-sources` strips it; a VCS dependency in
   published metadata is the defect that left the predecessor unresolvable for
   six years.

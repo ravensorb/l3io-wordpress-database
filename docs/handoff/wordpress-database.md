@@ -24,8 +24,9 @@ namespace `l3io.wp.database`, nothing preserved from the old surface, no shim.
    marked DEFERRED or PARTIALLY are genuinely not done.
 3. `.memlog.md` beside it — 81 entries, the authoritative decision record with reasoning. Go
    here before re-deciding anything.
-4. `CHANGELOG.md` — every behaviour change, including one the upstream handoff asked for that
-   was rejected with evidence.
+4. `docs/rewrite-notes.md` (was `CHANGELOG.md`, moved in `731edec`; release notes now come
+   from commit messages) — including one change the upstream handoff asked for that was
+   rejected with evidence.
 5. The family's architecture spine and ADRs live in **`l3io-wordpress-backup`**, not here:
    `_bmad-output/planning-artifacts/architecture/.../ARCHITECTURE-SPINE.md` (29 invariants,
    AD-n) and `docs/adr/`. AD-2, AD-8, AD-9, AD-14, AD-27, AD-28, AD-29 bind this package.
@@ -39,26 +40,26 @@ namespace `l3io.wp.database`, nothing preserved from the old surface, no shim.
 - [done] `make ci` replays all five jobs locally under `act`; `make verify-wheel` is the
   fast standalone equivalent.
 - [done] PRD reconciled to `final` and addendum corrected.
-- [todo] **Commit and push three uncommitted tracked changes**: `.github/workflows/ci.yml`
+- [superseded 2026-10-12] **Commit and push three uncommitted tracked changes**: `.github/workflows/ci.yml`
   (a stale comment fix), `pyproject.toml` and `uv.lock` (dependency pin moved from a rev to
   tag `v1.5.0`). All gates pass with them in place; they are simply uncommitted.
-- [todo] Delete or deliberately keep the tag **`v1.0`** — a 2018 predecessor tag on
+- [todo — Shawn's] Delete or deliberately keep the tag **`v1.0`** — a 2018 predecessor tag on
   `6b88f31`, already pushed, and a live match for `publish.yml`'s `v*` trigger.
-- [todo] Decide where the architecture record lives: a local doc here, or a pointer from
+- [todo — Shawn's] Decide where the architecture record lives: a local doc here, or a pointer from
   `AGENTS.md` to the backup repo's spine. My recommendation was the pointer, on the grounds
   that duplicating 29 invariants across three repos guarantees drift. Not decided.
-- [todo] FR-23 — second credential provider. Not implemented; only AWS. Recommendation
+- [todo — Shawn's] FR-23 — second credential provider. Not implemented; only AWS. Recommendation
   changed from Azure Key Vault to a **dependency-free env-var provider**, which proves the
   interface is not AWS-shaped without adding an SDK.
-- [todo] FR-29 — correlation identifier. Not implemented. Either build it or retire it
+- [todo — Shawn's] FR-29 — correlation identifier. Not implemented. Either build it or retire it
   deliberately; review argued it adds little for a single-threaded six-statement fan-out, but
   nobody made that call.
-- [todo] FR-48 — no check that `requires-python` and the CI matrices agree. Three hand-kept
+- [done 2026-10-12, `0c4e3cf`] FR-48 — no check that `requires-python` and the CI matrices agree. Three hand-kept
   copies of one fact; a global-rule-#4 violation.
-- [todo] FR-50 — no scripted name-conflict release gate. The release path relies on memory,
+- [done 2026-10-12, `57a9c77`] FR-50 — no scripted name-conflict release gate. The release path relies on memory,
   which the requirement forbids.
-- [todo] FR-45 — no `security-audit` workflow. Nothing scans dependencies or the lock.
-- [todo] G5 — **no MySQL 9.x test leg**, and 9.x is the generation FR-8/FR-9 exist for, since
+- [done 2026-10-12, `cc107fb`] FR-45 — no `security-audit` workflow. Nothing scans dependencies or the lock.
+- [done 2026-10-12, `bb89bba`] G5 — **no MySQL 9.x test leg**, and 9.x is the generation FR-8/FR-9 exist for, since
   9.0 removed `mysql_native_password`. Cheapest coverage gain available.
 - [blocked] **Any PyPI release.** `l3io-wp-config` is tagged, released and mirrored to the
   internal Gitea registry but is **not resolvable from PyPI** — a GitHub Release is not an
@@ -66,7 +67,9 @@ namespace `l3io.wp.database`, nothing preserved from the old surface, no shim.
   `pip install l3io-wordpress-database[wpconfig]` unresolvable, reproducing the exact outage this
   rewrite repairs. Family invariant AD-15. Publication goes bottom-up: config, then database,
   then backup.
-- [blocked] Nothing is published anywhere. `publish.yml` is registered and dispatchable but
+- [stale — corrected 2026-10-12] Nothing is published anywhere. **False since 2026-09-30:**
+  `v0.0.1` (built as `l3io-wp-database`) and `v0.0.2` are GitHub Releases and are on the Gitea
+  `liquidlogiclabs` index. Still true: nothing on PyPI or TestPyPI. Original text follows. `publish.yml` is registered and dispatchable but
   has never run; `l3io-wordpress-database` returns 404 from the Gitea index. Release is Shawn's call,
   not an agent's. The first run should target `mirror` — Gitea packages are deletable, PyPI
   burns a filename permanently.
@@ -84,7 +87,9 @@ because you inherit my conclusions without my evidence. Stated precisely:
   past v7; v8/v9/v10 exist only as exact versions. **I verified this myself** with
   `git ls-remote`, and saw the act run fail with `couldn't find remote ref "v10"` before
   pinning `v10.1.0`. Applies to GitHub Actions too, not just act.
-- [todo] **MariaDB floor is 10.2, not 10.1** — `CREATE USER IF NOT EXISTS` works on 10.1.48
+- [done 2026-10-12] **MariaDB floor is 10.2, not 10.1** — re-tested against real servers:
+  10.1.48 fails 6 of 13 on `ALTER USER` (`ERROR 1064`), 10.2.44 passes all 13, and 10.2 is
+  now a CI leg. Original caveat follows. — `CREATE USER IF NOT EXISTS` works on 10.1.48
   but `ALTER USER` fails with `ERROR 1064`, and the sequence needs both. **I did NOT re-test
   this myself.** It came from a feasibility-review subagent, and I propagated it into NFR-4,
   the shared KB note and two peer sessions on that basis. My own integration runs used MariaDB
@@ -189,3 +194,40 @@ first. Suggested order:
   `../l3io-wordpress-backup/_bmad-output/implementation-artifacts/handoffs/04-legacy-names-and-registrations.md`.
 - PyPI trusted publishing binds owner/repo/workflow. `l3io-wordpress-database` does not exist
   on PyPI or TestPyPI (checked 2026-10-12), so register any publisher under the **new** name.
+
+---
+
+## Update — 2026-10-12, later: hardening pass
+
+Commits `0c4e3cf`..`bcdd118` on `main`, **not pushed** (asked, not done). Every gate passes:
+`make check` 128 passed / 13 skipped; `make ci-dryrun` resolves every action ref, the four
+new security-audit legs included; `security-audit.yml` ran clean under act;
+`check-cicd-alignment.py` 3 repos, 0 findings.
+
+- [done] `/l3io-doctor`: PM state tree empty and clean. One Low, on-request finding: no
+  agent instruction block for the `claude` runtime (`sync-agent-instructions --check` exit 1).
+  Not run; it would write `CLAUDE.md`.
+- [done] FR-48, FR-50, FR-45 and G5, plus the MariaDB floor. See State above and the
+  memlog entries dated 2026-10-12 for the reasoning behind each choice.
+- [done] **Defects found that nothing checked**, all left over from the 3da6f38 rename:
+  `make verify-wheel` invoked the retired console script and **failed on `main`**; the
+  wpconfig extra's `MissingDependencyError` told users to install `l3io-wp-config`;
+  `docs/migration.md` linked the moved `CHANGELOG.md`. `tests/test_declared_facts.py` now
+  fails on the first two classes. **Nothing checks Markdown links.**
+- [todo] **Push**, then confirm the five-engine matrix on GitHub. The 9.7 and 10.2 legs have
+  been verified locally against the same images, but never on a GitHub runner.
+- [todo] `AGENTS.md` refresh drafted (names, rev→tag, one stale caveat), awaiting
+  approval; the bmad-project-context skill writes only after approval.
+- [todo — Shawn's] **3.14 support, family-wide.** Config's matrices run 3.11–3.14 but its
+  classifiers stop at 3.13, so config's port of the FR-48 check fails until Shawn decides.
+  Database runs 3.11–3.13 and agrees with itself.
+- [todo — Shawn's] unchanged: FR-23, FR-29, tag `v1.0`, the retired-name `v0.0.1` assets
+  (GitHub release and the Gitea `l3io-wp-database` 0.0.1 package), the architecture-record
+  location, and any PyPI release. The PyPI block is unchanged: `l3io-wordpress-config`
+  still returns 404 from PyPI.
+- [inference] The `ubuntu-latest` label moves to Ubuntu 26 from 2026-10-19 (a GitHub
+  annotation on every run). The FR-50 gate runs on the runner's `python3` and needs 3.11+
+  for `tomllib`; Ubuntu 26's default should satisfy that, but it has not been checked.
+
+The coordination with `wordpress-config` (session `l3io-wordpress-config-8a`): it will port
+FR-45 as-is from `cc107fb`, and FR-48 from `0c4e3cf` once the 3.14 question is settled.

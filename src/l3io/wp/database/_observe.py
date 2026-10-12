@@ -45,11 +45,13 @@ def operation(name: str, connection: Connection) -> Iterator[dict[str, object]]:
 def _complete(
     name: str, connection: Connection, outcome: str, started: float, fields: dict[str, object]
 ) -> None:
-    _log.info(
-        "operation complete",
-        operation=name,
-        outcome=outcome,
-        duration_ms=round((time.monotonic() - started) * 1000, 1),
-        database=connection.database,
+    # One dict, reserved keys written last: a caller field with a colliding name
+    # must never raise here, because this runs inside the exception handlers.
+    event: dict[str, object] = {
         **fields,
-    )
+        "operation": name,
+        "outcome": outcome,
+        "duration_ms": round((time.monotonic() - started) * 1000, 1),
+        "database": connection.database,
+    }
+    _log.info("operation complete", **event)

@@ -85,3 +85,13 @@ def test_span_nests_under_the_callers_span() -> None:
     assert child.parent.span_id == parent.context.span_id
     assert child.attributes is not None
     assert child.attributes["db.name"] == "wp_site"
+
+
+def test_caller_field_named_like_a_reserved_key_cannot_mask_the_refusal(
+    logs: LogCapture,
+) -> None:
+    verdict = Verdict("drop_database", (Finding(Code.CONFIRMATION_MISMATCH, "no"),))
+    with pytest.raises(RefusedError), operation("drop_database", CONN) as fields:
+        fields["outcome"] = "x"
+        raise RefusedError(verdict)
+    assert logs.entries[-1]["outcome"] == "refused"

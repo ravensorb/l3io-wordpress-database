@@ -436,9 +436,15 @@ A coverage floor is enforced in CI.
 
 ## 14. Documentation and retirement of the predecessor
 
-This package is the only version. Its documentation describes only it; git history
-keeps the past.
+This package is the only version. Its documentation describes only it.
 
+- **Preserve first.** Before any deletion, branch `legacy/main` from `main` as it
+  stands, so every predecessor file and document stays retrievable as it was. The
+  existing remote branch `dev-1.0.1` moves to `legacy/dev-1.0.1`. `main`'s history is
+  not rewritten. The cleanup below lands on `main` as ordinary commits, so every
+  tag, release and pinned commit stays valid. From then on, `main` carries only the
+  current package. Predecessor material is never re-added to `main`; it is read from
+  `legacy/main`.
 - **Delete:** `docs/migration.md`; `docs/rewrite-notes.md`; the folder
   `_bmad-output/planning-artifacts/prds/prd-py-wordpress-database-2026-09-15/` (PRD,
   addendum, reviews and decision log).
@@ -457,6 +463,7 @@ keeps the past.
   5. destructive calls name their target twice.
 
 **Remote housekeeping**, each confirmed again immediately before it runs:
+- push `legacy/main`; rename `dev-1.0.1` to `legacy/dev-1.0.1` on GitHub;
 - delete tag `v1.0`, locally and on GitHub;
 - delete the GitHub release `v0.0.1` (the tag stays);
 - delete the Gitea package `l3io-wp-database` 0.0.1 (org `liquidlogiclabs`);

@@ -232,3 +232,42 @@ new security-audit legs included; `security-audit.yml` ran clean under act;
 
 The coordination with `wordpress-config` (session `l3io-wordpress-config-8a`): it will port
 FR-45 as-is from `cc107fb`, and FR-48 from `0c4e3cf` once the 3.14 question is settled.
+
+## From `wordpress-config`, 2026-10-12 — delivered by file
+
+The `wordpress-config` session wrote this section at Shawn's request, after this session
+ended before a message could reach it. It approves nothing here; put each item to Shawn.
+Delete the section once it has been acted on or declined. The same text is in
+`../l3io-wordpress-config/docs/handoff/wordpress-config.md`.
+
+1. **Legacy cleanup: config's run, for reference.** This repo's spec (`cfc633e`) already
+   plans the same pattern: `legacy/main`, then `dev-1.0.1` → `legacy/dev-1.0.1`, then
+   delete. Config did it as follows:
+   - **Backup:** a `git bundle --all`, verified, plus a test clone; the retired-name
+     release files saved; a tag→commit list.
+   - **Branches:** `legacy/pre-cleanup` at `main`'s tip, with a `LEGACY.md` recording every
+     retired ref and its SHA; `dev2` → `legacy/upstream-2019`.
+   - **Checks before deleting:** every legacy tag was an ancestor of `main` or on a legacy
+     branch, and no sibling pinned one. This repo's `v0.0.2` pin on config is untouched.
+   - **Deleted:** `v0.0.1` (release and tag), `v0.3`–`v1.4`, and `dev2`. Kept `v0.0.0`
+     and `v0.0.2`.
+   - **`main`'s docs** describe the current package only; `LICENSE` keeps the original
+     copyright line.
+
+   The permission classifier blocked the deletions until Shawn approved them explicitly.
+   Reference: `LEGACY.md` on config's `legacy/pre-cleanup`, and config commit `3b74f6d`.
+   Config named its snapshot `legacy/pre-cleanup`; this repo's spec says `legacy/main`.
+   Either is fine, but the family may want one name.
+2. **Floating tags.** Config maintains `v<major>`/`v<major>.<minor>` as backup does
+   (config `db7625d`). It also narrowed `publish.yml`'s push filter from `v*` to
+   `['v*.*.*', '!v0.0.0']`, so a floating tag can never start a publish. If this repo
+   enables floating tags, do the same; the guards are in config's
+   `tests/test_workflow_gates.py`.
+3. **Next config release.** This repo pins config's `v0.0.2`. When config releases
+   (`0.1.0` suggested; not yet decided):
+   - repin to the new tag;
+   - add a test that reads a `DB_PASSWORD` containing `);`, since config's parser fix for
+     such values only arrives through that repin.
+
+   This repo's suite already passes against config's development build: 128 passed, and
+   13 skipped for want of MySQL.

@@ -105,6 +105,8 @@ dev = [
   # versions. Declared directly rather than relied on through pytest's own
   # dependency on it.
   "packaging==26.3",
+  # Span assertions need a real SDK; the package itself depends on the API only.
+  "opentelemetry-sdk==1.44.0",
   # The optional extras are dev dependencies too, so a bare `uv run` can
   # exercise the code paths behind them. `uv run` syncs the default groups
   # only, which PRUNES extras -- without this, every `uv run` silently

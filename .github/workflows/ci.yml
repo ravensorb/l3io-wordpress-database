@@ -26,6 +26,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # act binds the developer's checkout and runs as root, so any .pyc a job
+  # writes lands in the host's src/ and tests/, root-owned. Observed: 13 files
+  # after one `make ci`. tests/test_act_workspace.py requires this.
+  PYTHONDONTWRITEBYTECODE: '1'
+
 # No UV_FROZEN: uv rejects `--locked` when it is set, and --locked is wanted
 # because it asserts the lockfile is current rather than merely using it.
 
@@ -167,6 +173,11 @@ jobs:
       DB_ADMIN_USER: root
       DB_ADMIN_PASSWORD: root
       UV_PROJECT_ENVIRONMENT: /tmp/l3io-venv-py${{ matrix.python }}-${{ matrix.engine.name }}
+      # Same rule as the venv: nothing a job writes may land in the working
+      # tree. act binds the developer's checkout and runs as root, so a
+      # .coverage written there is root-owned afterwards and shared by every
+      # leg running at once.
+      COVERAGE_FILE: /tmp/l3io-coverage-py${{ matrix.python }}-${{ matrix.engine.name }}
     steps:
       - uses: actions/checkout@v7
         with: { fetch-depth: 0 }  # hatch-vcs needs tags; shallow yields 0.1.devN
@@ -183,7 +194,8 @@ jobs:
         # convergence, and the AD-28 reachability proof.
         run: >-
           uv run pytest -q
-          --cov=l3io.wp.database --cov-report=term-missing --cov-report=xml
+          --cov=l3io.wp.database --cov-report=term-missing
+          --cov-report=xml:/tmp/l3io-coverage-py${{ matrix.python }}-${{ matrix.engine.name }}.xml
 
   build:
     name: build
@@ -191,6 +203,9 @@ jobs:
     needs: [static, contracts, test]
     env:
       UV_PROJECT_ENVIRONMENT: /tmp/l3io-venv-build
+      # Built outside the working tree, for the reason COVERAGE_FILE is: under
+      # act a dist/ here is the host's, root-owned, and accumulates wheels.
+      DIST_DIR: /tmp/l3io-dist
     steps:
       - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
@@ -201,13 +216,13 @@ jobs:
       # git during development, and a VCS dependency reaching published
       # metadata is exactly the defect that left the predecessor package
       # unresolvable for six years.
-      - run: uv build --no-sources
+      - run: uv build --no-sources --out-dir "$DIST_DIR"
       - name: no development source reached the dependency metadata
         # Inspect Requires-Dist LINES specifically. A hostname search over the
         # whole file cries wolf -- Project-URL entries and the README carried in
         # the long description both legitimately contain github.com -- and a
         # check that cries wolf gets switched off.
-        run: uv run python tools/check_dist_metadata.py
+        run: uv run python tools/check_dist_metadata.py --dist "$DIST_DIR"
       - name: upload the distributions
         # GitHub-only, and not a gate. Both artifact majors were tested under
         # act 0.2.89 rather than assumed:
@@ -230,7 +245,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: dist
-          path: dist/
+          path: ${{ env.DIST_DIR }}/
           if-no-files-found: error
 
   verify-install:
@@ -257,6 +272,9 @@ jobs:
               || fromJSON('["3.11","3.12","3.13"]') }}
     env:
       UV_PROJECT_ENVIRONMENT: /tmp/l3io-venv-verify-${{ matrix.python }}
+      # Outside the working tree, as in the build job. Inside it, a wheel left
+      # by an earlier act run made the exactly-one-wheel guard below fail.
+      DIST_DIR: /tmp/l3io-dist-verify-${{ matrix.python }}
     steps:
       - uses: actions/checkout@v7
         with: { fetch-depth: 0 }  # hatch-vcs needs tags; shallow yields 0.1.devN
@@ -266,9 +284,9 @@ jobs:
           python-version: ${{ matrix.python }}
           enable-cache: ${{ !vars.LOCAL_ACT }}
       - name: build the distributions
-        run: uv build --no-sources --out-dir dist-verify
+        run: uv build --no-sources --out-dir "$DIST_DIR"
       - name: no development source reached the dependency metadata
-        run: uv run python tools/check_dist_metadata.py --dist dist-verify
+        run: uv run python tools/check_dist_metadata.py --dist "$DIST_DIR"
       - name: install the wheel into an isolated environment and import it
         run: |
           set -euo pipefail
@@ -277,13 +295,13 @@ jobs:
           # expands to two paths and the command downstream gets a nonsense
           # argument. A real runner starts empty; act binds the working tree,
           # which is how this was found.
-          count=$(find dist-verify -maxdepth 1 -name '*.whl' | wc -l)
+          count=$(find "$DIST_DIR" -maxdepth 1 -name '*.whl' | wc -l)
           if [ "$count" -ne 1 ]; then
-            echo "::error::expected exactly one wheel in dist-verify/, found $count"
-            find dist-verify -maxdepth 1 -name '*.whl'
+            echo "::error::expected exactly one wheel in $DIST_DIR, found $count"
+            find "$DIST_DIR" -maxdepth 1 -name '*.whl'
             exit 1
           fi
-          wheel=$(find dist-verify -maxdepth 1 -name '*.whl')
+          wheel=$(find "$DIST_DIR" -maxdepth 1 -name '*.whl')
           uv run --isolated --no-project --python "${{ matrix.python }}" \
                  --with "$wheel" \
                  python -c "from l3io.wp import database; import sys; print('import ok', database.__version__, sys.version)"
@@ -297,13 +315,13 @@ jobs:
           # expands to two paths and the command downstream gets a nonsense
           # argument. A real runner starts empty; act binds the working tree,
           # which is how this was found.
-          count=$(find dist-verify -maxdepth 1 -name '*.whl' | wc -l)
+          count=$(find "$DIST_DIR" -maxdepth 1 -name '*.whl' | wc -l)
           if [ "$count" -ne 1 ]; then
-            echo "::error::expected exactly one wheel in dist-verify/, found $count"
-            find dist-verify -maxdepth 1 -name '*.whl'
+            echo "::error::expected exactly one wheel in $DIST_DIR, found $count"
+            find "$DIST_DIR" -maxdepth 1 -name '*.whl'
             exit 1
           fi
-          wheel=$(find dist-verify -maxdepth 1 -name '*.whl')
+          wheel=$(find "$DIST_DIR" -maxdepth 1 -name '*.whl')
           uv run --isolated --no-project --python "${{ matrix.python }}" \
                  --with "$wheel" \
                  python - <<'PY'
@@ -321,12 +339,12 @@ jobs:
           # expands to two paths and the command downstream gets a nonsense
           # argument. A real runner starts empty; act binds the working tree,
           # which is how this was found.
-          count=$(find dist-verify -maxdepth 1 -name '*.whl' | wc -l)
+          count=$(find "$DIST_DIR" -maxdepth 1 -name '*.whl' | wc -l)
           if [ "$count" -ne 1 ]; then
-            echo "::error::expected exactly one wheel in dist-verify/, found $count"
-            find dist-verify -maxdepth 1 -name '*.whl'
+            echo "::error::expected exactly one wheel in $DIST_DIR, found $count"
+            find "$DIST_DIR" -maxdepth 1 -name '*.whl'
             exit 1
           fi
-          wheel=$(find dist-verify -maxdepth 1 -name '*.whl')
+          wheel=$(find "$DIST_DIR" -maxdepth 1 -name '*.whl')
           uv run --isolated --no-project --python "${{ matrix.python }}" \
                  --with "$wheel" l3io-wordpress-database --version

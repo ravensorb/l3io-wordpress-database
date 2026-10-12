@@ -85,23 +85,28 @@ def test_py_typed_is_present() -> None:
 
 
 @pytest.mark.slow
-def test_built_wheel_has_no_namespace_init() -> None:
+def test_built_wheel_has_no_namespace_init(tmp_path: Path) -> None:
     """The wheel is what users install; the working tree is not.
 
     Installing the working tree would have passed throughout the package's
     entire six-year outage, which is the blind spot this closes.
+
+    Built into an empty directory, and exactly one wheel asserted. This test
+    used to build into the repository's dist/ and inspect ``sorted(...)[-1]``,
+    which sorts versions as strings: with dev6, dev9, dev11 and dev14 present it
+    inspected dev9, not the wheel it had just built, and passed with
+    ``src/l3io/__init__.py`` planted.
     """
     root = SRC.parent
-    dist = root / "dist"
     subprocess.run(  # noqa: S603
-        [UV, "build", "--wheel", "--out-dir", str(dist)],
+        [UV, "build", "--wheel", "--out-dir", str(tmp_path)],
         cwd=root,
         check=True,
         capture_output=True,
     )
-    wheels = sorted(dist.glob("l3io_wordpress_database-*.whl"))
-    assert wheels, "no wheel was produced"
-    names = zipfile.ZipFile(wheels[-1]).namelist()
+    wheels = list(tmp_path.glob("*.whl"))
+    assert len(wheels) == 1, f"expected exactly one wheel, found {wheels}"
+    names = zipfile.ZipFile(wheels[0]).namelist()
     assert "l3io/__init__.py" not in names
     assert "l3io/wp/__init__.py" not in names
     assert "l3io/wp/database/__init__.py" in names

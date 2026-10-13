@@ -1,159 +1,136 @@
-"""The command line interface, and its exit-code contract.
-
-Distinct exit codes per failure class are the point: the state model exists so
-that "could not connect" and "database absent" are different answers, and
-automation should be able to branch on them without parsing messages.
-"""
+"""The command line: argument handling, exit codes, and no password on argv."""
 
 from __future__ import annotations
 
-from pathlib import Path
+import json
+from typing import Any
 
 import pytest
 
-from l3io.wp.database import __version__
-from l3io.wp.database.cli import Exit, main
+from l3io.wp.database import cli
+from l3io.wp.database.provision import EnsureResult, OperationResult
+from l3io.wp.database.state import ConnectionState
+from l3io.wp.database.verdict import Code, Finding, Verdict
+
+SITE = ["--db-host", "db:3307", "--db-name", "wp_site"]
+WP = ["--db-user", "wpuser", "--db-password-env", "WP_PW"]
+ADMIN = ["--admin-user", "root", "--admin-password-env", "ADMIN_PW"]
 
 
-def test_version_exits_cleanly(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as caught:
-        main(["--version"])
-    assert caught.value.code == 0
-    # Compared against the package's own value, not a literal. The version comes
-    # from the git tag (AD-30), so a literal here would be a second source that
-    # breaks on every release -- and it did, which is how this was found.
-    assert __version__ in capsys.readouterr().out
+@pytest.fixture(autouse=True)
+def _env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WP_PW", "wp-secret")
+    monkeypatch.setenv("ADMIN_PW", "admin-secret")
 
 
-def test_no_source_is_a_usage_error() -> None:
-    with pytest.raises(SystemExit) as caught:
-        main(["--admin-username", "root", "--admin-password", "pw"])
-    assert caught.value.code == Exit.USAGE
+def _actions(parser: Any) -> list[Any]:
+    found = list(parser._actions)
+    for action in parser._actions:
+        choices = getattr(action, "choices", None)
+        if isinstance(choices, dict):  # subcommand maps; --log-format's choices are a list
+            for sub in choices.values():
+                found += _actions(sub)
+    return found
 
 
-def test_partial_explicit_source_is_a_usage_error() -> None:
-    with pytest.raises(SystemExit) as caught:
-        main(["--db-host", "127.0.0.1", "--db-name", "wp"])
-    assert caught.value.code == Exit.USAGE
+def test_no_option_takes_a_password_value() -> None:
+    offenders = [
+        a.option_strings
+        for a in _actions(cli.build_parser())
+        if any("password" in s for s in a.option_strings)
+        and not all(s.endswith("-env") for s in a.option_strings)
+    ]
+    assert offenders == []
 
 
-def test_both_sources_is_a_usage_error(tmp_path: Path) -> None:
-    config = tmp_path / "wp-config.php"
-    config.write_text("<?php\n")
-    with pytest.raises(SystemExit) as caught:
-        main(["--wp-config", str(config), "--db-host", "127.0.0.1"])
-    assert caught.value.code == Exit.USAGE
+def test_ensure_success_prints_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: dict[str, Any] = {}
 
-
-def test_missing_admin_credentials_is_a_usage_error() -> None:
-    """Administrative credentials are never defaulted to the WordPress account."""
-    with pytest.raises(SystemExit) as caught:
-        main(
-            [
-                "--db-host",
-                "127.0.0.1:1",
-                "--db-name",
-                "wp_site",
-                "--db-user",
-                "wp",
-                "--db-password",
-                "pw",
-            ]
+    def fake_ensure(connection, admin, wordpress, **kw):  # type: ignore[no-untyped-def]
+        calls.update(
+            connection=connection, admin=admin.resolve(), wordpress=wordpress.resolve(), kw=kw
         )
-    assert caught.value.code == Exit.USAGE
+        return EnsureResult(True, True, True, True, Verdict("ensure"))
+
+    monkeypatch.setattr(cli, "ensure", fake_ensure)
+    assert cli.main(["ensure", *SITE, *WP, *ADMIN]) == cli.Exit.OK
+    out = json.loads(capsys.readouterr().out)
+    assert out["created_database"] is True
+    assert calls["connection"].port == 3307
+    assert calls["admin"].password == "admin-secret"
+    assert calls["wordpress"].password == "wp-secret"
 
 
-def test_both_admin_sources_is_a_usage_error() -> None:
-    with pytest.raises(SystemExit) as caught:
-        main(
-            [
-                "--db-host",
-                "127.0.0.1:1",
-                "--db-name",
-                "wp_site",
-                "--db-user",
-                "wp",
-                "--db-password",
-                "pw",
-                "--admin-username",
-                "root",
-                "--admin-password",
-                "pw",
-                "--admin-credentials-aws-secret-id",
-                "sid",
-            ]
-        )
-    assert caught.value.code == Exit.USAGE
-
-
-def test_inspect_reports_state_and_does_not_need_admin_credentials(
-    capsys: pytest.CaptureFixture[str],
+def test_refusal_maps_to_refused_exit(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """--inspect changes nothing, so it requires no administrative credentials."""
-    code = main(
-        [
-            "--inspect",
-            "--db-host",
-            "127.0.0.1:1",
-            "--db-name",
-            "wp_site",
-            "--db-user",
-            "wp",
-            "--db-password",
-            "pw",
-        ]
+    from l3io.wp.database.errors import RefusedError
+
+    def refuse(*a: Any, **k: Any) -> Any:
+        raise RefusedError(Verdict("drop_database", (Finding(Code.CONFIRMATION_MISMATCH, "no"),)))
+
+    monkeypatch.setattr(cli, "drop_database", refuse)
+    code = cli.main(["drop-database", *SITE, *ADMIN, "--confirm", "wrong"])
+    assert code == cli.Exit.REFUSED
+    assert "confirmation_mismatch" in capsys.readouterr().err
+
+
+def test_unreachable_refusal_maps_to_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    from l3io.wp.database.errors import RefusedError
+
+    def refuse(*a: Any, **k: Any) -> Any:
+        raise RefusedError(Verdict("ensure", (Finding(Code.UNREACHABLE, "down"),)))
+
+    monkeypatch.setattr(cli, "ensure", refuse)
+    assert cli.main(["ensure", *SITE, *WP, *ADMIN]) == cli.Exit.UNREACHABLE
+
+
+def test_inspect_not_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "inspect", lambda *a, **k: ConnectionState.DATABASE_ABSENT)
+    assert cli.main(["inspect", *SITE, *WP]) == cli.Exit.NOT_READY
+
+
+def test_destructive_subcommands_require_confirm() -> None:
+    with pytest.raises(SystemExit) as info:
+        cli.main(["drop-database", *SITE, *ADMIN])
+    assert info.value.code == cli.Exit.USAGE
+
+
+def test_missing_password_variable_is_a_credentials_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ADMIN_PW")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    assert (
+        cli.main(["drop-database", *SITE, *ADMIN, "--confirm", "wp_site"]) == cli.Exit.CREDENTIALS
     )
-    assert code == Exit.NOT_READY
-    assert capsys.readouterr().out.strip() == "unreachable"
 
 
-def test_unreachable_server_exits_with_its_own_code(
-    capsys: pytest.CaptureFixture[str],
+def test_check_subcommand_prints_the_verdict(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Not a generic failure: nothing may be created on an unreachable server."""
-    code = main(
-        [
-            "--db-host",
-            "127.0.0.1:1",
-            "--db-name",
-            "wp_site",
-            "--db-user",
-            "wp",
-            "--db-password",
-            "pw",
-            "--admin-username",
-            "root",
-            "--admin-password",
-            "pw",
-        ]
+    monkeypatch.setattr(
+        cli,
+        "check_drop_database",
+        lambda *a, **k: Verdict("drop_database", (Finding(Code.LIVE_WORDPRESS_SITE, "live"),)),
     )
-    assert code == Exit.UNREACHABLE
-    assert "could not be reached" in capsys.readouterr().err
-
-
-def test_invalid_database_name_is_reported_not_interpolated(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    code = main(
-        [
-            "--inspect",
-            "--db-host",
-            "127.0.0.1:1",
-            "--db-name",
-            "bad.name",
-            "--db-user",
-            "wp",
-            "--db-password",
-            "pw",
-        ]
+    assert (
+        cli.main(["check", "drop-database", *SITE, *ADMIN, "--confirm", "wp_site"]) == cli.Exit.OK
     )
-    assert code == Exit.USAGE
-    assert "not a valid" in capsys.readouterr().err
+    out = json.loads(capsys.readouterr().out)
+    assert out["findings"][0]["code"] == "live_wordpress_site"
 
 
-def test_a_missing_wp_config_reports_our_error(
-    capsys: pytest.CaptureFixture[str], tmp_path: Path
-) -> None:
-    code = main(["--inspect", "--wp-config", str(tmp_path / "absent.php")])
-    assert code == Exit.CONFIGURATION
-    assert "could not read" in capsys.readouterr().err
+def test_revoke_passes_user_and_confirm(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake(connection, admin, user, **kw):  # type: ignore[no-untyped-def]
+        seen.update(user=user, **kw)
+        return OperationResult(True, Verdict("revoke"))
+
+    monkeypatch.setattr(cli, "revoke", fake)
+    assert (
+        cli.main(["revoke", *SITE, *ADMIN, "--user", "wpuser", "--confirm", "wpuser"])
+        == cli.Exit.OK
+    )
+    assert seen == {"user": "wpuser", "user_host": "%", "confirm": "wpuser"}

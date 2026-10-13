@@ -15,7 +15,7 @@ from l3io.wp.database.versions import (
     CEILING_DB_VERSION,
     FLOOR_DB_VERSION,
     SUPPORTED_FROM,
-    WpDatabaseVersion,
+    SchemaVersion,
     release_for,
 )
 
@@ -39,7 +39,7 @@ def test_a_value_between_releases_resolves_to_the_lower_one() -> None:
 
 
 def test_below_the_floor_is_none_and_says_so() -> None:
-    version = WpDatabaseVersion(FLOOR_DB_VERSION - 1)
+    version = SchemaVersion(FLOOR_DB_VERSION - 1)
     assert version.release is None
     assert version.is_older_than_supported
     assert "older than WordPress 5.0" in str(version)
@@ -65,7 +65,7 @@ def test_the_mapping_is_many_to_one() -> None:
 
 
 def test_a_newer_schema_is_distinguishable_from_an_unknown_one() -> None:
-    newer = WpDatabaseVersion(CEILING_DB_VERSION + 1000)
+    newer = SchemaVersion(CEILING_DB_VERSION + 1000)
     assert newer.is_newer_than_known
     assert not newer.is_older_than_supported
     assert newer.release is not None
@@ -73,7 +73,7 @@ def test_a_newer_schema_is_distinguishable_from_an_unknown_one() -> None:
 
 
 def test_a_known_schema_renders_readably() -> None:
-    assert str(WpDatabaseVersion(FLOOR_DB_VERSION)) == (
+    assert str(SchemaVersion(FLOOR_DB_VERSION)) == (
         f"WordPress 5.0 (db_version {FLOOR_DB_VERSION})"
     )
 

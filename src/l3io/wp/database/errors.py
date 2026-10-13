@@ -16,10 +16,6 @@ class DatabaseError(Exception):
     """Base class for every error this package raises."""
 
 
-#: Removed in Task 13 of plan 1, once nothing imports the old name.
-WpDatabaseError = DatabaseError
-
-
 class InvalidArgumentsError(DatabaseError):
     """An invalid combination of arguments was supplied."""
 

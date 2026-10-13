@@ -1,53 +1,46 @@
-"""AD-3: the site descriptor is parsed once and frozen."""
-
 from __future__ import annotations
-
-import dataclasses
 
 import pytest
 
-from l3io.wp.database import DEFAULT_PORT, WpConnection, WpCredentials
+from l3io.wp.database.connection import Connection
 from l3io.wp.database.errors import InvalidArgumentsError, InvalidDatabaseNameError
 
 
-def creds() -> WpCredentials:
-    return WpCredentials.from_username_and_password("wp", "pw")
+def test_from_db_host_parses_port() -> None:
+    assert Connection.from_db_host("db.example:3307", "wp_site") == Connection(
+        host="db.example", database="wp_site", port=3307
+    )
 
 
-def test_db_host_with_port_is_split() -> None:
-    c = WpConnection.from_db_host("127.0.0.1:3307", "wp_site", creds())
-    assert (c.host, c.port) == ("127.0.0.1", 3307)
+def test_from_db_host_defaults_port() -> None:
+    assert Connection.from_db_host("db", "wp").port == 3306
 
 
-def test_db_host_without_port_defaults() -> None:
-    c = WpConnection.from_db_host("db.internal", "wp_site", creds())
-    assert (c.host, c.port) == ("db.internal", DEFAULT_PORT)
+@pytest.mark.parametrize("db_host", ["", "db:notaport"])
+def test_bad_db_host(db_host: str) -> None:
+    with pytest.raises(InvalidArgumentsError):
+        Connection.from_db_host(db_host, "wp")
+
+
+@pytest.mark.parametrize("port", [0, 65536])
+def test_bad_port(port: int) -> None:
+    with pytest.raises(InvalidArgumentsError):
+        Connection(host="db", database="wp", port=port)
+
+
+def test_bad_database_name() -> None:
+    with pytest.raises(InvalidDatabaseNameError):
+        Connection(host="db", database="wp.site")
+
+
+def test_carries_no_credentials() -> None:
+    assert not hasattr(Connection(host="db", database="wp"), "credentials")
 
 
 def test_the_descriptor_is_frozen() -> None:
-    """The original let db_host's setter silently discard an assigned db_port."""
-    c = WpConnection.from_db_host("127.0.0.1:3307", "wp_site", creds())
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        c.host = "elsewhere"  # type: ignore[misc]
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        c.port = 1234  # type: ignore[misc]
+    import dataclasses
 
+    import pytest as _pytest
 
-def test_non_numeric_port_is_rejected_at_construction() -> None:
-    with pytest.raises(InvalidArgumentsError):
-        WpConnection.from_db_host("127.0.0.1:not-a-port", "wp_site", creds())
-
-
-def test_out_of_range_port_is_rejected() -> None:
-    with pytest.raises(InvalidArgumentsError):
-        WpConnection(host="h", database="wp", credentials=creds(), port=70000)
-
-
-def test_database_name_is_validated_at_construction() -> None:
-    with pytest.raises(InvalidDatabaseNameError):
-        WpConnection.from_db_host("127.0.0.1", "bad.name", creds())
-
-
-def test_repr_does_not_leak_the_password() -> None:
-    c = WpConnection.from_db_host("127.0.0.1", "wp_site", creds())
-    assert "pw" not in repr(c)
+    with _pytest.raises(dataclasses.FrozenInstanceError):
+        Connection(host="db", database="wp").port = 3307  # type: ignore[misc]

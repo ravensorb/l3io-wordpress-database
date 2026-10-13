@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .credentials import WpCredentials
 from .errors import InvalidArgumentsError
 from .identifiers import validate_database_name
 
@@ -54,37 +53,3 @@ class Connection:
         """Build from WordPress's ``DB_HOST``, which may carry ``host:port``."""
         host, port = _split_db_host(db_host)
         return cls(host=host, database=database, port=port)
-
-
-@dataclass(frozen=True, slots=True)
-class WpConnection:
-    """An immutable description of one WordPress database and its account."""
-
-    host: str
-    database: str
-    credentials: WpCredentials
-    port: int = DEFAULT_PORT
-
-    def __post_init__(self) -> None:
-        if not self.host:
-            msg = "host must not be empty"
-            raise InvalidArgumentsError(msg)
-        if not isinstance(self.port, int) or not (0 < self.port < 65536):
-            msg = f"port must be an integer between 1 and 65535, not {self.port!r}"
-            raise InvalidArgumentsError(msg)
-        validate_database_name(self.database)
-
-    @classmethod
-    def from_db_host(cls, db_host: str, db_name: str, credentials: WpCredentials) -> WpConnection:
-        """Build from WordPress's ``DB_HOST``, which may carry ``host:port``.
-
-        This is the only place the combined form is parsed.
-        """
-        host, port = _split_db_host(db_host)
-        return cls(host=host, database=db_name, credentials=credentials, port=port)
-
-    def __repr__(self) -> str:
-        return (
-            f"WpConnection(host={self.host!r}, port={self.port}, "
-            f"database={self.database!r}, credentials={self.credentials!r})"
-        )

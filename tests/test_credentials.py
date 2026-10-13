@@ -1,50 +1,104 @@
-"""AD-9: resolution is an explicit call, not a property read."""
+"""Credential sources: absent versus failed, and the chain that respects it."""
 
 from __future__ import annotations
 
 import pytest
 
-from l3io.wp.database import ResolvedCredentials, WpCredentials
-from l3io.wp.database.errors import InvalidArgumentsError
+from l3io.wp.database.credentials import (
+    AwsSecretsManager,
+    CredentialChain,
+    CredentialSource,
+    Environment,
+    Explicit,
+    ResolvedCredentials,
+)
+from l3io.wp.database.errors import (
+    CredentialsAbsentError,
+    CredentialsUnobtainableError,
+    InvalidArgumentsError,
+)
+
+SECRET = "s3cr3t-value"
 
 
-def test_explicit_pair_resolves() -> None:
-    r = WpCredentials.from_username_and_password("wp", "pw").resolve()
-    assert r == ResolvedCredentials("wp", "pw")
+class _Failing:
+    source = "failing"
+
+    def resolve(self) -> ResolvedCredentials:
+        msg = "refused"
+        raise CredentialsUnobtainableError(msg)
 
 
-def test_partial_input_raises_instead_of_returning_none() -> None:
-    """The original returned None here; three commits chased the fallout."""
+class _Absent:
+    source = "absent"
+
+    def resolve(self) -> ResolvedCredentials:
+        msg = "nothing here"
+        raise CredentialsAbsentError(msg, sources=(self.source,))
+
+
+def test_protocol_accepts_a_plain_object() -> None:
+    assert isinstance(_Failing(), CredentialSource)
+    assert isinstance(Explicit("u", "p"), CredentialSource)
+
+
+def test_explicit_resolves_and_redacts() -> None:
+    source = Explicit("wpuser", SECRET)
+    resolved = source.resolve()
+    assert resolved == ResolvedCredentials("wpuser", SECRET, "explicit")
+    assert SECRET not in repr(source)
+    assert SECRET not in repr(resolved)
+
+
+def test_empty_password_is_a_value() -> None:
+    assert Explicit("u", "").resolve().password == ""
+
+
+def test_environment_both_unset_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("X_USER", raising=False)
+    monkeypatch.delenv("X_PASS", raising=False)
+    with pytest.raises(CredentialsAbsentError) as info:
+        Environment("X_USER", "X_PASS").resolve()
+    assert info.value.sources == ("environment:X_USER,X_PASS",)
+
+
+def test_environment_half_set_is_a_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("X_USER", "u")
+    monkeypatch.delenv("X_PASS", raising=False)
+    with pytest.raises(CredentialsUnobtainableError, match="X_PASS"):
+        Environment("X_USER", "X_PASS").resolve()
+
+
+def test_environment_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("X_USER", "u")
+    monkeypatch.setenv("X_PASS", SECRET)
+    resolved = Environment("X_USER", "X_PASS").resolve()
+    assert (resolved.username, resolved.password) == ("u", SECRET)
+    assert resolved.source == "environment:X_USER,X_PASS"
+
+
+def test_chain_skips_absent_and_names_who_answered() -> None:
+    resolved = CredentialChain(_Absent(), Explicit("u", "p")).resolve()
+    assert resolved.source == "explicit"
+
+
+def test_chain_stops_on_failure() -> None:
+    with pytest.raises(CredentialsUnobtainableError):
+        CredentialChain(_Failing(), Explicit("u", "p")).resolve()
+
+
+def test_chain_all_absent_names_every_source() -> None:
+    with pytest.raises(CredentialsAbsentError) as info:
+        CredentialChain(_Absent(), _Absent()).resolve()
+    assert info.value.sources == ("absent", "absent")
+
+
+def test_empty_chain_is_rejected() -> None:
     with pytest.raises(InvalidArgumentsError):
-        WpCredentials.from_username_and_password("wp", None)  # type: ignore[arg-type]
-    with pytest.raises(InvalidArgumentsError):
-        WpCredentials.from_username_and_password(None, "pw")  # type: ignore[arg-type]
+        CredentialChain()
 
 
-def test_both_sources_at_once_is_rejected() -> None:
-    with pytest.raises(InvalidArgumentsError):
-        WpCredentials(username="wp", password="pw", aws_secret_id="sid")
-
-
-def test_no_source_at_all_is_rejected() -> None:
-    with pytest.raises(InvalidArgumentsError):
-        WpCredentials()
-
-
-def test_there_are_no_resolving_property_getters() -> None:
-    """Attribute access must not perform I/O; that was the AD-9 defect."""
-    c = WpCredentials.from_aws_secrets_manager("sid", "us-east-1")
-    assert not hasattr(c, "username")
-    assert not hasattr(c, "password")
-
-
-def test_resolved_password_is_redacted_in_repr() -> None:
-    r = ResolvedCredentials("wp", "super-secret")
-    assert "super-secret" not in repr(r)
-    assert "wp" in repr(r)
-
-
-def test_source_is_reportable_without_leaking_anything() -> None:
-    assert WpCredentials.from_username_and_password("wp", "pw").source == "explicit"
-    assert WpCredentials.from_aws_secrets_manager("sid").source == "aws-secrets-manager"
-    assert "sid" not in repr(WpCredentials.from_aws_secrets_manager("sid"))
+def test_aws_source_label_names_the_secret_not_its_value() -> None:
+    assert AwsSecretsManager("prod/wp-admin", region="us-east-1").source == (
+        "aws-secrets-manager:prod/wp-admin"
+    )

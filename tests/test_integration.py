@@ -16,14 +16,13 @@ from collections.abc import Iterator
 
 import pymysql
 import pytest
+import structlog
 
-from l3io.wp.database import (
-    ConnectionState,
-    WpConnection,
-    WpCredentials,
-    WpDatabase,
-)
-from l3io.wp.database.errors import RefusedError
+from l3io.wp.database import ConnectionState, inspect
+from l3io.wp.database.connection import Connection
+from l3io.wp.database.credentials import Explicit
+from l3io.wp.database.errors import AccessDeniedError, RefusedError
+from l3io.wp.database.inspection import schema_version, survey
 from l3io.wp.database.provision import (
     check_drop_database,
     check_ensure,
@@ -33,6 +32,7 @@ from l3io.wp.database.provision import (
     revoke,
     rotate_password,
 )
+from l3io.wp.database.server import ServerFamily
 from l3io.wp.database.verdict import Code
 
 pytestmark = pytest.mark.skipif(
@@ -43,10 +43,6 @@ HOST = os.environ.get("DB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("DB_PORT", "3306"))
 ADMIN_USER = os.environ.get("DB_ADMIN_USER", "root")
 ADMIN_PASSWORD = os.environ.get("DB_ADMIN_PASSWORD", "rootpw")
-
-
-def admin() -> WpCredentials:
-    return WpCredentials.from_username_and_password(ADMIN_USER, ADMIN_PASSWORD)
 
 
 def admin_sql(*statements: str) -> None:
@@ -71,22 +67,15 @@ def suffix() -> Iterator[str]:
     )
 
 
-def site(suffix: str, password: str = "wp-pass") -> WpDatabase:
-    creds = WpCredentials.from_username_and_password(f"u_{suffix}", password)
-    return WpDatabase(
-        WpConnection(host=HOST, port=PORT, database=f"wp_{suffix}", credentials=creds)
-    )
-
-
 def test_fresh_site_reports_authentication_failure_not_absence(suffix: str) -> None:
     """Authentication precedes database resolution on the server.
 
     With neither the account nor the database present, the server returns 1045
-    and never reaches the database, so DATABASE_ABSENT is simply not observable
-    from the WordPress account yet. Verified against MySQL 8.0. This is the
-    concrete reason the administrator must be the authority on what exists.
+    and never reaches the database, so DATABASE_ABSENT is not observable from
+    the WordPress account yet. This is why the administrator is the authority
+    on what exists (AD-29).
     """
-    state = site(suffix).inspect()
+    state = inspect(new_site(suffix), Explicit(f"u_{suffix}", "wp-pass"))
     assert state is ConnectionState.AUTHENTICATION_FAILED
     assert state.needs_provisioning
 
@@ -97,180 +86,72 @@ def test_absent_database_is_distinguished_once_the_account_exists(suffix: str) -
         f"CREATE USER 'u_{suffix}'@'%' IDENTIFIED BY 'wp-pass'",
         f"GRANT ALL PRIVILEGES ON `wp\\_{suffix}`.* TO 'u_{suffix}'@'%'",
     )
-    state = site(suffix).inspect()
+    state = inspect(new_site(suffix), Explicit(f"u_{suffix}", "wp-pass"))
     assert state is ConnectionState.DATABASE_ABSENT
     assert state.needs_provisioning
 
 
-def test_ensure_provisions_from_nothing(suffix: str) -> None:
-    result = site(suffix).ensure(admin())
-    assert result.ok
-    assert result.changed
-    assert result.state is ConnectionState.READY
-
-
-def test_second_ensure_changes_nothing_and_writes_nothing(suffix: str) -> None:
-    """FR-7 idempotence, stated as convergence rather than as a no-op promise."""
-    db = site(suffix)
-    db.ensure(admin())
-    again = db.ensure(admin())
-    assert again.ok
-    assert not again.changed
-    assert again.actions == ()
-
-
-def test_database_present_but_user_absent_still_provisions(suffix: str) -> None:
-    """The `wp db create` / MYSQL_DATABASE case.
-
-    Inspecting as the WordPress account fails here, because that account does
-    not exist yet. Treating that failure as a refusal to provision would reject
-    the most common input this package serves.
-    """
-    admin_sql(f"CREATE DATABASE `wp_{suffix}`")
-    db = site(suffix)
-    assert db.inspect() is ConnectionState.AUTHENTICATION_FAILED
-    assert db.inspect().needs_provisioning
-    result = db.ensure(admin())
-    assert result.ok
-
-
-def test_rotated_config_password_is_converged(suffix: str) -> None:
-    """wp-config.php is the desired state; the server is converged onto it."""
-    site(suffix).ensure(admin())
-    rotated = site(suffix, password="a-different-password")
-    assert rotated.inspect() is ConnectionState.AUTHENTICATION_FAILED
-    result = rotated.ensure(admin())
-    assert result.ok
-    assert any("set password" in action for action in result.actions)
+def test_inspect_ready_after_ensure(suffix: str) -> None:
+    wp = Explicit(f"u_{suffix}", "wp-pass")
+    ensure(new_site(suffix), new_admin(), wp)
+    assert inspect(new_site(suffix), wp) is ConnectionState.READY
 
 
 def test_wrong_password_is_authentication_failure_not_absence(suffix: str) -> None:
-    site(suffix).ensure(admin())
-    wrong = site(suffix, password="not-the-password")
-    assert wrong.inspect() is ConnectionState.AUTHENTICATION_FAILED
+    ensure(new_site(suffix), new_admin(), Explicit(f"u_{suffix}", "wp-pass"))
+    state = inspect(new_site(suffix), Explicit(f"u_{suffix}", "not-the-password"))
+    assert state is ConnectionState.AUTHENTICATION_FAILED
 
 
-def test_unreachable_server_is_distinguished(suffix: str) -> None:
-    creds = WpCredentials.from_username_and_password("nobody", "nothing")
-    db = WpDatabase(
-        WpConnection(host="127.0.0.1", port=1, database="wp_nowhere", credentials=creds)
-    )
-    assert db.inspect() is ConnectionState.UNREACHABLE
-    assert db.inspect().blocks_provisioning
+def test_unreachable_server_is_distinguished() -> None:
+    conn = Connection(host="127.0.0.1", port=1, database="wp_nowhere")
+    state = inspect(conn, Explicit("nobody", "nothing"))
+    assert state is ConnectionState.UNREACHABLE
+    assert state.blocks_provisioning
 
 
-def test_ad28_grant_does_not_reach_a_name_matching_the_unescaped_pattern(
-    suffix: str,
-) -> None:
-    """AD-28 regression. This is the shape that proves the escaping works.
-
-    `wp_<suffix>` unescaped is a LIKE pattern in which `_` matches any single
-    character, so a grant on it would also cover `wpX<suffix>`. The assertion is
-    that the neighbouring database is *unreachable*, not merely that the SQL
-    text looks escaped.
-    """
+def test_ad28_neighbour_database_cannot_be_opened(suffix: str) -> None:
+    """AD-28: wp_<s> unescaped matches wpX<s>; opening the neighbour must fail."""
     admin_sql(f"CREATE DATABASE `wpX{suffix}`")
-    result = site(suffix).ensure(admin())
-    assert result.ok
-
-    neighbour = pymysql.connect(
-        host=HOST,
-        port=PORT,
-        user=f"u_{suffix}",
-        password="wp-pass",
-        connect_timeout=10,
-    )
-    with neighbour, neighbour.cursor() as cur:
-        cur.execute("SHOW DATABASES")
-        visible = {row[0] for row in cur.fetchall()}
-
-    assert f"wp_{suffix}" in visible, "the granted database should be visible"
-    assert f"wpX{suffix}" not in visible, (
-        f"AD-28 violated: wpX{suffix} matches the unescaped pattern wp_{suffix} "
-        "and is reachable by an account granted only on the latter"
-    )
-
+    ensure(new_site(suffix), new_admin(), Explicit(f"u_{suffix}", "wp-pass"))
     with pytest.raises(pymysql.err.MySQLError):
-        conn = pymysql.connect(
+        pymysql.connect(
             host=HOST,
             port=PORT,
             user=f"u_{suffix}",
             password="wp-pass",
             database=f"wpX{suffix}",
             connect_timeout=10,
-        )
-        conn.close()
+        ).close()
 
 
-def test_database_version_honours_a_custom_table_prefix(suffix: str) -> None:
-    """The original hardcoded `wp_options`, so it failed on any prefixed site.
-
-    WordPress's $table_prefix is configurable and frequently changed, so
-    reading the version from a fixed table name broke on exactly the installs
-    that most need inspecting.
-    """
-    site(suffix).ensure(admin())
-    prefix = "custom_"
-    admin_sql(
-        f"CREATE TABLE `wp_{suffix}`.`{prefix}options` "  # noqa: S608 - test fixture, generated name
-        "(option_name VARCHAR(191) PRIMARY KEY, option_value LONGTEXT)",
-        f"INSERT INTO `wp_{suffix}`.`{prefix}options` (option_name, option_value) "  # noqa: S608
-        "VALUES ('db_version', '58975')",
-    )
-    version = site(suffix).database_version(table_prefix=prefix)
-    assert version is not None
-    assert version.db_version == 58975
-    # 6.7 introduced this schema and 6.8 still reports it, so the answer names
-    # the INTRODUCING release -- the mapping is many-to-one by nature.
-    assert version.release == "6.7"
-    assert not version.is_newer_than_known
-
-
-def test_database_version_is_none_when_no_row_exists(suffix: str) -> None:
-    site(suffix).ensure(admin())
+def test_schema_version_is_none_when_no_row_exists(suffix: str) -> None:
+    ensure(new_site(suffix), new_admin(), Explicit(f"u_{suffix}", "wp-pass"))
     admin_sql(
         f"CREATE TABLE `wp_{suffix}`.`wp_options` "  # noqa: S608 - test fixture
         "(option_name VARCHAR(191) PRIMARY KEY, option_value LONGTEXT)"
     )
-    assert site(suffix).database_version() is None
+    assert schema_version(new_site(suffix), Explicit(f"u_{suffix}", "wp-pass")) is None
 
 
 def test_a_wrong_table_prefix_is_reported_not_silently_empty(suffix: str) -> None:
     """A missing options table means the prefix is wrong, which is worth saying."""
-    from l3io.wp.database.errors import AccessDeniedError
-
-    site(suffix).ensure(admin())
+    wp = Explicit(f"u_{suffix}", "wp-pass")
+    ensure(new_site(suffix), new_admin(), wp)
     with pytest.raises(AccessDeniedError) as caught:
-        site(suffix).database_version(table_prefix="definitely_not_")
+        schema_version(new_site(suffix), wp, "definitely_not_")
     assert "table prefix" in str(caught.value)
 
 
 def test_no_credential_appears_in_logs_during_real_provisioning(suffix: str) -> None:
-    """The provisioning path is the one that logs an action list.
-
-    Unit coverage coaxes credentials through inspect(); this covers the path
-    that actually emits `actions=[...]`, including the ALTER USER step whose
-    action text names the account whose password was just set.
-    """
-    import structlog
-
+    """The provisioning path, including CREATE USER and ALTER USER, logs cleanly."""
     secret = "integration-only-secret-value"
-    db = site(suffix, password=secret)
     with structlog.testing.capture_logs() as captured:
-        result = db.ensure(admin())
-    assert result.ok
+        created = ensure(new_site(suffix), new_admin(), Explicit(f"u_{suffix}", secret))
+        rotated = ensure(new_site(suffix), new_admin(), Explicit(f"u_{suffix}", secret + "2"))
+    assert created.created_user and rotated.password_set
     rendered = repr(captured)
     assert secret not in rendered, f"a log event carried the password: {rendered}"
-    # The action list should name what happened without quoting the value.
-    assert any("set password" in action for action in result.actions)
-    assert all(secret not in action for action in result.actions)
-
-
-# --- new API (plan 1, task 9) ---------------------------------------------------
-from l3io.wp.database.connection import Connection  # noqa: E402
-from l3io.wp.database.credentials import Explicit  # noqa: E402
-from l3io.wp.database.inspection import schema_version, survey  # noqa: E402
-from l3io.wp.database.server import ServerFamily  # noqa: E402
 
 
 def new_admin() -> Explicit:

@@ -17,7 +17,7 @@ Two properties worth stating:
   floor ever needs lowering. Every one of the 328 releases at or above 5.0
   yields a value, so the map has no gaps within its supported range. Anything
   below the floor reports ``None`` and is distinguishable via
-  :attr:`WpDatabaseVersion.is_older_than_supported`.
+  :attr:`SchemaVersion.is_older_than_supported`.
 * **The mapping is many-to-one.** Several releases share a ``db_version``
   (7.0 and 7.1 both report 61833), so a value identifies the release that
   *introduced* that schema, not the exact release installed.
@@ -100,7 +100,3 @@ class SchemaVersion:
             return f"db_version {self.db_version} (no known release)"
         suffix = " or newer" if self.is_newer_than_known else ""
         return f"WordPress {self.release}{suffix} (db_version {self.db_version})"
-
-
-#: Removed in Task 13 of plan 1.
-WpDatabaseVersion = SchemaVersion

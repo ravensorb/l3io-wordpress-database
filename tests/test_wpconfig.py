@@ -17,6 +17,7 @@ from l3io.wp.database.credentials import CredentialSource
 from l3io.wp.database.errors import (
     ConfigUnreadableError,
     CredentialsAbsentError,
+    CredentialsUnobtainableError,
     MissingConfigValueError,
 )
 from l3io.wp.database.wpconfig import WpConfigFile
@@ -68,7 +69,7 @@ def test_half_defined_credentials_name_the_missing_one(
     tmp_path: Path, defined: str, missing: str
 ) -> None:
     body = f"<?php\ndefine('{defined}', 'x');\n"
-    with pytest.raises(MissingConfigValueError, match=missing):
+    with pytest.raises(CredentialsUnobtainableError, match=missing):
         WpConfigFile(write(tmp_path, body)).resolve()
 
 

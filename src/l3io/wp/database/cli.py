@@ -250,7 +250,7 @@ def _run(args: argparse.Namespace) -> int:
         }
         verdict = checks[operation]()
         _emit(verdict)
-        return Exit.OK if verdict.ok else Exit.REFUSED
+        return Exit.OK if verdict.ok else _refusal_exit(verdict)
 
     if operation == "inspect":
         state = inspect(connection, _wordpress(args, config))

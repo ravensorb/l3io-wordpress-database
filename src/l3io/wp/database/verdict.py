@@ -36,6 +36,8 @@ class Code(StrEnum):
     CONFIRMATION_MISMATCH = "confirmation_mismatch"
     LIVE_WORDPRESS_SITE = "live_wordpress_site"
     END_OF_LIFE_SERVER = "end_of_life_server"
+    MISSING_DEPENDENCY = "missing_dependency"
+    PASSWORD_UNVERIFIED = "password_unverified"  # noqa: S105 - a finding code, not a password
 
     @property
     def severity(self) -> Severity:
@@ -63,6 +65,8 @@ _SEVERITY: Mapping[Code, Severity] = MappingProxyType(
         Code.CONFIRMATION_MISMATCH: _B,
         Code.LIVE_WORDPRESS_SITE: _W,
         Code.END_OF_LIFE_SERVER: _W,
+        Code.MISSING_DEPENDENCY: _B,
+        Code.PASSWORD_UNVERIFIED: _W,
     }
 )
 
@@ -86,6 +90,13 @@ _DESCRIPTION: Mapping[Code, str] = MappingProxyType(
             "a destructive target has a WordPress options table and schema version"
         ),
         Code.END_OF_LIFE_SERVER: "the server version is past upstream end of life",
+        Code.PASSWORD_UNVERIFIED: (
+            "the account's host does not match this machine, so its password could not be "
+            "checked by logging in and was left unchanged; use rotate_password to set it"
+        ),
+        Code.MISSING_DEPENDENCY: (
+            "a credential source needs an extra that is not installed; fields.extra names it"
+        ),
     }
 )
 

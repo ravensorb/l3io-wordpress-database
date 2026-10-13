@@ -117,3 +117,20 @@ def test_role_makes_privileges_unverified() -> None:
 def test_mariadb_null_role_is_no_role() -> None:
     cursor = _Cursor([("admin@localhost",), (None,), [], []])
     assert not account_privileges(cursor, "wp_site").unverified
+
+
+@pytest.mark.parametrize(
+    ("text", "eol"),
+    [
+        ("10.6.21-MariaDB", True),
+        ("11.2.6-MariaDB", True),
+        ("10.11.10-MariaDB", False),
+        ("11.4.5-MariaDB", False),
+        ("8.3.0", True),
+        ("9.6.0", True),
+        ("9.7.2", False),
+        ("8.4.11", False),
+    ],
+)
+def test_retired_series_are_end_of_life(text: str, eol: bool) -> None:
+    assert parse_version(text).is_end_of_life is eol

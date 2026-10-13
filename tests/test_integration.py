@@ -25,6 +25,7 @@ from l3io.wp.database.errors import AccessDeniedError, RefusedError
 from l3io.wp.database.inspection import schema_version, survey
 from l3io.wp.database.provision import (
     check_drop_database,
+    check_drop_user,
     check_ensure,
     drop_database,
     drop_user,
@@ -60,7 +61,7 @@ def suffix() -> Iterator[str]:
     """A unique suffix so parallel runs and reruns cannot collide."""
     token = uuid.uuid4().hex[:8]
     yield token
-    names = [f"wp_{token}", f"wpX{token}", f"other_{token}"]
+    names = [f"wp_{token}", f"wpX{token}", f"other_{token}", f"wp%{token}"]
     admin_sql(
         *[f"DROP DATABASE IF EXISTS `{n}`" for n in names],
         f"DROP USER IF EXISTS 'u_{token}'@'%'",
@@ -299,6 +300,9 @@ def test_check_and_run_agree_on_unreachable() -> None:
     conn = Connection(host="127.0.0.1", port=1, database="wp_x")
     verdict = check_ensure(conn, new_admin(), Explicit("u", "p"))
     assert Code.UNREACHABLE in verdict.codes
+    with pytest.raises(RefusedError) as info:
+        ensure(conn, new_admin(), Explicit("u", "p"))
+    assert info.value.verdict == verdict
 
 
 _WP_PRIVS = "SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX"
@@ -402,3 +406,89 @@ def test_rotate_password(suffix: str) -> None:
     conn = provisioned(suffix)
     rotate_password(conn, new_admin(), Explicit(f"u_{suffix}", "rotated"))
     pymysql.connect(host=HOST, port=PORT, user=f"u_{suffix}", password="rotated").close()
+
+
+# --- final review C1: '%' in a database name -----------------------------------
+
+
+def test_percent_in_a_database_name_is_provisioned_revoked_and_dropped(suffix: str) -> None:
+    """PyMySQL %-formats a statement whenever it has arguments, so a '%' inside a
+    quoted identifier must not be read as a format directive."""
+    conn = Connection(host=HOST, port=PORT, database=f"wp%{suffix}")
+    wp = Explicit(f"u_{suffix}", "wp-pass")
+    first = ensure(conn, new_admin(), wp)
+    assert (first.created_database, first.granted) == (True, True)
+    assert not ensure(conn, new_admin(), wp).changed
+    admin_sql(
+        f"CREATE TABLE `wp%{suffix}`.`wp_options` "
+        "(option_name VARCHAR(191), option_value LONGTEXT)",
+        f"INSERT INTO `wp%{suffix}`.`wp_options` VALUES ('db_version', '58975')",  # noqa: S608
+    )
+    assert schema_version(conn, wp) is not None
+    assert (
+        Code.LIVE_WORDPRESS_SITE
+        in check_drop_database(conn, new_admin(), confirm=conn.database).codes
+    )
+    assert revoke(conn, new_admin(), wp.username, confirm=wp.username).changed
+    assert drop_database(conn, new_admin(), confirm=conn.database).changed
+
+
+def test_revoke_removes_a_grant_on_the_unescaped_name(suffix: str) -> None:
+    """The 0.0.x package granted on the unescaped name, which also matched
+    neighbours such as wpX<s>; revoke must remove that grant too."""
+    conn = new_site(suffix)
+    user = f"u_{suffix}"
+    admin_sql(
+        f"CREATE DATABASE `wp_{suffix}`",
+        f"CREATE USER '{user}'@'%' IDENTIFIED BY 'p'",
+        f"GRANT ALL PRIVILEGES ON `wp_{suffix}`.* TO '{user}'@'%'",
+    )
+    assert revoke(conn, new_admin(), user, confirm=user).changed
+    assert survey(conn, new_admin(), wordpress_user=user).user_privileges == frozenset()
+
+
+def test_drop_user_needs_only_create_user(suffix: str) -> None:
+    """The check promises CREATE USER is enough, so the run must not read mysql.user."""
+    victim = f"u_{suffix}"
+    limited = f"a_{suffix}"
+    admin_sql(
+        f"CREATE USER '{victim}'@'%' IDENTIFIED BY 'p'",
+        f"CREATE USER '{limited}'@'%' IDENTIFIED BY 'limited-pw'",
+        f"GRANT CREATE USER ON *.* TO '{limited}'@'%'",
+    )
+    try:
+        admin = Explicit(limited, "limited-pw")
+        conn = new_site(suffix)
+        assert check_drop_user(conn, admin, victim, confirm=victim).ok
+        assert drop_user(conn, admin, victim, confirm=victim).changed is True
+        assert drop_user(conn, admin, victim, confirm=victim).changed is False
+    finally:
+        admin_sql(f"DROP USER IF EXISTS '{limited}'@'%'")
+
+
+def test_ensure_with_a_user_host_that_excludes_the_runner(suffix: str) -> None:
+    """The runner cannot log in as an account whose host it does not match, so
+    ensure must not judge the password by trying."""
+    conn = new_site(suffix)
+    wp = Explicit(f"u_{suffix}", "wp-pass")
+    try:
+        first = ensure(conn, new_admin(), wp, user_host="10.255.255.%")
+        assert (first.created_database, first.created_user, first.granted) == (True, True, True)
+        assert Code.PASSWORD_UNVERIFIED in first.verdict.codes
+        again = ensure(conn, new_admin(), wp, user_host="10.255.255.%")
+        assert not again.changed
+    finally:
+        admin_sql(f"DROP USER IF EXISTS 'u_{suffix}'@'10.255.255.%'")
+
+
+def test_a_warning_found_by_a_real_check_is_logged(suffix: str) -> None:
+    conn = provisioned(suffix)
+    admin_sql(
+        f"CREATE TABLE `wp_{suffix}`.`wp_options` "
+        "(option_name VARCHAR(191), option_value LONGTEXT)",
+        f"INSERT INTO `wp_{suffix}`.`wp_options` VALUES ('db_version', '58975')",  # noqa: S608
+    )
+    with structlog.testing.capture_logs() as captured:
+        check_drop_database(conn, new_admin(), confirm=conn.database)
+    codes = [e.get("code") for e in captured if e.get("log_level") == "warning"]
+    assert "live_wordpress_site" in codes

@@ -14,23 +14,28 @@ from typing import Any
 
 import pymysql
 
-from ._observe import operation
+from ._observe import VERDICT_KEY, operation
 from ._sql import (
+    ER_CANNOT_USER,
     ER_DBACCESS_DENIED,
     ER_NONEXISTING_GRANT,
     ER_TABLEACCESS_DENIED,
     classify,
     error_code,
+    literal,
     open_connection,
 )
 from .connection import Connection
 from .credentials import CredentialSource, Explicit, ResolvedCredentials
 from .errors import (
     AccessDeniedError,
+    ConfigurationError,
     CredentialsAbsentError,
     CredentialsUnobtainableError,
     DatabaseError,
     DatabaseUnreachableError,
+    InvalidIdentifierError,
+    MissingDependencyError,
     ProvisioningError,
     RefusedError,
 )
@@ -68,6 +73,8 @@ class EnsureFacts:
     user_exists: bool
     password_works: bool
     grant_present: bool
+    #: Whether this machine matches the account's host, so a login proves anything.
+    verifiable: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +149,21 @@ def _as_package_error(
     return fallback(message or f"the server failed during the operation: {exc}")
 
 
+def _resolve_or_finding(source: CredentialSource) -> ResolvedCredentials | Finding:
+    """Resolve a source, or say why it could not be, as a finding.
+
+    Every failure a source can have is a verdict, never an exception: an absent
+    or failed source, a config file that cannot supply the pair, and a missing
+    extra.
+    """
+    try:
+        return source.resolve()
+    except MissingDependencyError as exc:
+        return Finding(Code.MISSING_DEPENDENCY, str(exc), {"extra": exc.extra})
+    except (CredentialsUnobtainableError, CredentialsAbsentError, ConfigurationError) as exc:
+        return Finding(Code.CREDENTIALS_UNOBTAINABLE, str(exc))
+
+
 def _preflight(
     connection: Connection,
     admin: CredentialSource,
@@ -154,10 +176,9 @@ def _preflight(
     Returns the verdict and, only when it holds no blocker, the open session.
     """
     verdict = Verdict(operation_name)
-    try:
-        resolved = admin.resolve()
-    except (CredentialsUnobtainableError, CredentialsAbsentError) as exc:
-        return verdict.with_findings(Finding(Code.CREDENTIALS_UNOBTAINABLE, str(exc))), None
+    resolved = _resolve_or_finding(admin)
+    if isinstance(resolved, Finding):
+        return verdict.with_findings(resolved), None
     try:
         session = open_connection(connection, resolved, database=None)
     except pymysql.err.MySQLError as exc:
@@ -223,8 +244,13 @@ def _ensure_facts(
         (wordpress.username, user_host),
     )
     user_exists = int(cur.fetchone()[0]) > 0
-    password_works = False
-    if user_exists:
+    # A login from here only says something about the account if the server
+    # would match this machine to user_host; ask the server, which applies its
+    # own host-pattern rules.
+    cur.execute("SELECT SUBSTRING_INDEX(USER(), '@', -1) LIKE %s", (user_host,))
+    verifiable = bool(cur.fetchone()[0])
+    password_works = not verifiable  # unverifiable: leave an existing password alone
+    if user_exists and verifiable:
         try:
             open_connection(connection, wordpress, database=None).close()
             password_works = True
@@ -238,7 +264,9 @@ def _ensure_facts(
         (grantee(wordpress.username, user_host), grant_pattern(database)),
     )
     held = frozenset(str(r[0]) for r in cur.fetchall())
-    return EnsureFacts(database_exists, user_exists, password_works, held >= WORDPRESS_PRIVILEGES)
+    return EnsureFacts(
+        database_exists, user_exists, password_works, held >= WORDPRESS_PRIVILEGES, verifiable
+    )
 
 
 def check_ensure(
@@ -249,17 +277,17 @@ def check_ensure(
     user_host: str = "%",  # noqa: ARG001 - kept so check_ensure mirrors ensure's signature
 ) -> Verdict:
     """What :func:`ensure` would find, without changing anything."""
-    with operation("check_ensure", connection):
+    with operation("check_ensure", connection) as fields:
         verdict, session = _preflight(
             connection, admin, "ensure", ENSURE_PRIVILEGES, ENSURE_GLOBAL_PRIVILEGES
         )
         if session is not None:
             session.close()
-        try:
-            validate_user_name(wordpress.resolve().username)
-        except (CredentialsUnobtainableError, CredentialsAbsentError) as exc:
-            verdict = verdict.with_findings(Finding(Code.CREDENTIALS_UNOBTAINABLE, str(exc)))
-        return verdict
+        wp = _resolve_or_finding(wordpress)
+        if isinstance(wp, Finding):
+            return _note(fields, verdict.with_findings(wp))
+        validate_user_name(wp.username)
+        return _note(fields, verdict)
 
 
 def ensure(
@@ -285,16 +313,21 @@ def ensure(
         verdict, session = _preflight(
             connection, admin, "ensure", ENSURE_PRIVILEGES, ENSURE_GLOBAL_PRIVILEGES
         )
-        try:
-            wp = wordpress.resolve()
-        except (CredentialsUnobtainableError, CredentialsAbsentError) as exc:
+        wp = _resolve_or_finding(wordpress)
+        if isinstance(wp, Finding):
             if session is not None:
                 session.close()
-            verdict = verdict.with_findings(Finding(Code.CREDENTIALS_UNOBTAINABLE, str(exc)))
-            raise RefusedError(verdict) from exc
+            raise RefusedError(verdict.with_findings(wp))
+        try:
+            # Validated before the session check, exactly as check_ensure does,
+            # so both raise the same error for a bad name.
+            username = validate_user_name(wp.username)
+        except InvalidIdentifierError:
+            if session is not None:
+                session.close()
+            raise
         if session is None:
             raise RefusedError(verdict)
-        username = validate_user_name(wp.username)
         database = connection.database
         statements = {
             "create_database": (
@@ -311,14 +344,15 @@ def ensure(
                 (username, user_host, wp.password),
             ),
             "grant": (
-                f"GRANT ALL PRIVILEGES ON {quote_grant_database(database)}.* TO %s@%s",
+                f"GRANT ALL PRIVILEGES ON {literal(quote_grant_database(database))}.* TO %s@%s",
                 (username, user_host),
             ),
         }
         completed: list[str] = []
         with session, session.cursor() as cur:
             try:
-                steps = plan_ensure(_ensure_facts(cur, connection, wp, user_host))
+                facts = _ensure_facts(cur, connection, wp, user_host)
+                steps = plan_ensure(facts)
             except pymysql.err.MySQLError as exc:
                 raise _as_package_error(exc, ProvisioningError) from exc
             try:
@@ -331,10 +365,20 @@ def ensure(
                 msg = f"ensuring {database!r} failed after {len(completed)} step(s)"
                 raise ProvisioningError(msg, completed=tuple(completed)) from exc
 
-        final = inspect(connection, Explicit(wp.username, wp.password))
-        if not final.is_ready:
-            msg = f"ensure ran but {database!r} is still not usable by {username!r}: {final}"
-            raise ProvisioningError(msg, completed=tuple(completed))
+        if facts.verifiable:
+            final = inspect(connection, Explicit(wp.username, wp.password))
+            if not final.is_ready:
+                msg = f"ensure ran but {database!r} is still not usable by {username!r}: {final}"
+                raise ProvisioningError(msg, completed=tuple(completed))
+        else:
+            verdict = verdict.with_findings(
+                Finding(
+                    Code.PASSWORD_UNVERIFIED,
+                    f"{username!r}@{user_host!r} does not match this machine, so the result "
+                    "was not verified by logging in and an existing password was left unchanged",
+                    {"user_host": user_host},
+                )
+            )
 
         result = EnsureResult(
             created_database="create_database" in completed,
@@ -343,6 +387,7 @@ def ensure(
             granted="grant" in completed,
             verdict=verdict,
         )
+        fields[VERDICT_KEY] = verdict
         fields.update(
             created_database=result.created_database,
             created_user=result.created_user,
@@ -391,7 +436,8 @@ def _looks_live(cur: Any, database: str) -> bool:
     for (table,) in cur.fetchall():
         try:
             cur.execute(
-                f"SELECT COUNT(*) FROM {quote_identifier(database)}.{quote_identifier(table)} "  # noqa: S608 - quoted identifiers
+                f"SELECT COUNT(*) FROM {literal(quote_identifier(database))}"  # noqa: S608 - quoted identifiers
+                f".{literal(quote_identifier(table))} "
                 "WHERE option_name = %s",
                 ("db_version",),
             )
@@ -448,6 +494,12 @@ def _guarded(
     return verdict, session
 
 
+def _note(fields: dict[str, object], verdict: Verdict) -> Verdict:
+    """Hand a check's verdict to the operation wrapper, which logs its warnings."""
+    fields[VERDICT_KEY] = verdict
+    return verdict
+
+
 def _check(verdict_and_session: tuple[Verdict, Any | None]) -> Verdict:
     verdict, session = verdict_and_session
     if session is not None:
@@ -471,9 +523,12 @@ def check_rotate_password(
     user_host: str = "%",
 ) -> Verdict:
     """What :func:`rotate_password` would find, without changing anything."""
-    with operation("check_rotate_password", connection):
-        username = validate_user_name(wordpress.resolve().username)
-        return _check(_rotate_guard(connection, admin, username, user_host))
+    with operation("check_rotate_password", connection) as fields:
+        wp = _resolve_or_finding(wordpress)
+        if isinstance(wp, Finding):
+            return _note(fields, Verdict("rotate_password", (wp,)))
+        username = validate_user_name(wp.username)
+        return _note(fields, _check(_rotate_guard(connection, admin, username, user_host)))
 
 
 def rotate_password(
@@ -485,7 +540,9 @@ def rotate_password(
 ) -> OperationResult:
     """Set the account's password to the one ``wordpress`` resolves to."""
     with operation("rotate_password", connection) as fields:
-        wp = wordpress.resolve()
+        wp = _resolve_or_finding(wordpress)
+        if isinstance(wp, Finding):
+            raise RefusedError(Verdict("rotate_password", (wp,)))
         username = validate_user_name(wp.username)
         verdict, session = _rotate_guard(connection, admin, username, user_host)
         if session is None:
@@ -498,6 +555,7 @@ def rotate_password(
                 msg = f"setting the password for {username!r} failed"
                 raise ProvisioningError(msg) from exc
         fields["changed"] = True
+        fields[VERDICT_KEY] = verdict
         return OperationResult(True, verdict)
 
 
@@ -523,9 +581,9 @@ def check_revoke(
     confirm: str,
 ) -> Verdict:
     """What :func:`revoke` would find, without changing anything."""
-    with operation("check_revoke", connection):
+    with operation("check_revoke", connection) as fields:
         validate_user_name(user)
-        return _check(_revoke_guard(connection, admin, user, user_host, confirm))
+        return _note(fields, _check(_revoke_guard(connection, admin, user, user_host, confirm)))
 
 
 def revoke(
@@ -545,21 +603,28 @@ def revoke(
         verdict, session = _revoke_guard(connection, admin, user, user_host, confirm)
         if session is None:
             raise RefusedError(verdict)
-        changed = True
+        # The escaped pattern is what ensure grants; the unescaped name is what
+        # the 0.0.x package granted, and it also matched neighbouring names.
+        targets = dict.fromkeys(
+            [quote_grant_database(connection.database), quote_identifier(connection.database)]
+        )
+        changed = False
         with session, session.cursor() as cur:
-            try:
-                cur.execute(
-                    f"REVOKE ALL PRIVILEGES ON {quote_grant_database(connection.database)}.* "  # noqa: S608 - escaped identifier
-                    "FROM %s@%s",
-                    (user, user_host),
-                )
-                session.commit()
-            except pymysql.err.MySQLError as exc:
-                if error_code(exc) != ER_NONEXISTING_GRANT:
-                    msg = f"revoking {user!r} on {connection.database!r} failed"
-                    raise ProvisioningError(msg) from exc
-                changed = False
+            for target in targets:
+                try:
+                    cur.execute(
+                        f"REVOKE ALL PRIVILEGES ON {literal(target)}.* FROM %s@%s",  # noqa: S608 - quoted identifier
+                        (user, user_host),
+                    )
+                except pymysql.err.MySQLError as exc:
+                    if error_code(exc) != ER_NONEXISTING_GRANT:
+                        msg = f"revoking {user!r} on {connection.database!r} failed"
+                        raise _as_package_error(exc, ProvisioningError, msg) from exc
+                else:
+                    changed = True
+            session.commit()
         fields["changed"] = changed
+        fields[VERDICT_KEY] = verdict
         return OperationResult(changed, verdict)
 
 
@@ -578,9 +643,9 @@ def check_drop_user(
     confirm: str,
 ) -> Verdict:
     """What :func:`drop_user` would find, without changing anything."""
-    with operation("check_drop_user", connection):
+    with operation("check_drop_user", connection) as fields:
         validate_user_name(user)
-        return _check(_drop_user_guard(connection, admin, user, confirm))
+        return _note(fields, _check(_drop_user_guard(connection, admin, user, confirm)))
 
 
 def drop_user(
@@ -598,14 +663,19 @@ def drop_user(
         if session is None:
             raise RefusedError(verdict)
         with session, session.cursor() as cur:
+            # Existence is decided by the DROP itself (1396 = no such account), so
+            # the run needs only CREATE USER, exactly what the check verified.
+            existed = True
             try:
-                existed = _user_exists(cur, user, user_host)
-                cur.execute("DROP USER IF EXISTS %s@%s", (user, user_host))
+                cur.execute("DROP USER %s@%s", (user, user_host))
                 session.commit()
             except pymysql.err.MySQLError as exc:
-                msg = f"dropping {user!r} failed"
-                raise _as_package_error(exc, ProvisioningError, msg) from exc
+                if error_code(exc) != ER_CANNOT_USER:
+                    msg = f"dropping {user!r} failed"
+                    raise _as_package_error(exc, ProvisioningError, msg) from exc
+                existed = False
         fields["changed"] = existed
+        fields[VERDICT_KEY] = verdict
         return OperationResult(existed, verdict)
 
 
@@ -626,8 +696,8 @@ def check_drop_database(
     connection: Connection, admin: CredentialSource, *, confirm: str
 ) -> Verdict:
     """What :func:`drop_database` would find, without changing anything."""
-    with operation("check_drop_database", connection):
-        return _check(_drop_database_guard(connection, admin, confirm))
+    with operation("check_drop_database", connection) as fields:
+        return _note(fields, _check(_drop_database_guard(connection, admin, confirm)))
 
 
 def drop_database(
@@ -651,4 +721,5 @@ def drop_database(
                 msg = f"dropping {connection.database!r} failed"
                 raise _as_package_error(exc, ProvisioningError, msg) from exc
         fields["changed"] = existed
+        fields[VERDICT_KEY] = verdict
         return OperationResult(existed, verdict)

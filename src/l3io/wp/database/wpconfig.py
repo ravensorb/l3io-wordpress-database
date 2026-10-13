@@ -29,6 +29,7 @@ from .credentials import ResolvedCredentials
 from .errors import (
     ConfigUnreadableError,
     CredentialsAbsentError,
+    CredentialsUnobtainableError,
     MissingConfigValueError,
     MissingDependencyError,
 )
@@ -79,11 +80,16 @@ class WpConfigFile:
         if user is None and password is None:
             msg = f"{self._path} defines neither DB_USER nor DB_PASSWORD"
             raise CredentialsAbsentError(msg, sources=(self.source,))
-        return ResolvedCredentials(
-            self._require("DB_USER", user),
-            self._require("DB_PASSWORD", password),
-            self.source,
-        )
+        try:
+            return ResolvedCredentials(
+                self._require("DB_USER", user),
+                self._require("DB_PASSWORD", password),
+                self.source,
+            )
+        except MissingConfigValueError as exc:
+            # Half a pair is a failure, not an absence: a chain must not fall
+            # through to another credential after it (spec §5).
+            raise CredentialsUnobtainableError(str(exc)) from exc
 
     def connection(self) -> Connection:
         """Where the configured database lives."""

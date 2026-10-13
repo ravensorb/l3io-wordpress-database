@@ -127,7 +127,14 @@ class AwsSecretsManager:
         except ImportError as exc:
             raise MissingDependencyError(extra="aws", distribution="boto3") from exc
 
-        region = self.region or boto3.session.Session().region_name
+        # botocore's exceptions are not a public type (AD-14): everything that
+        # talks to AWS is in one block, and parsing what came back in another,
+        # so a client-side ValueError is never reported as a malformed secret.
+        try:
+            region = self.region or boto3.session.Session().region_name
+        except Exception as exc:  # noqa: BLE001 - botocore session errors (e.g. ProfileNotFound)
+            msg = f"could not read secret {self.secret_id!r}: the AWS session could not be set up"
+            raise CredentialsUnobtainableError(msg) from exc
         if not region:
             raise RegionNotKnownError
 
@@ -135,18 +142,24 @@ class AwsSecretsManager:
         try:
             client = boto3.client("secretsmanager", region_name=region)
             payload: Any = client.get_secret_value(SecretId=self.secret_id)["SecretString"]
-            document = json.loads(payload)
-            username, password = document["username"], document["password"]
-        except (KeyError, ValueError) as exc:
-            msg = (
-                f"secret {self.secret_id!r} is not shaped as expected: "
-                "it must be JSON containing 'username' and 'password'"
-            )
-            raise CredentialsUnobtainableError(msg) from exc
         except Exception as exc:  # noqa: BLE001 - boto3 errors are not a public type (AD-14)
             msg = f"could not read secret {self.secret_id!r} from AWS Secrets Manager"
             raise CredentialsUnobtainableError(msg) from exc
-        return ResolvedCredentials(str(username), str(password), self.source)
+
+        shape = (
+            f"secret {self.secret_id!r} is not shaped as expected: it must be a JSON "
+            "object whose 'username' and 'password' are strings"
+        )
+        try:
+            document = json.loads(payload)
+        except (TypeError, ValueError) as exc:
+            raise CredentialsUnobtainableError(shape) from exc
+        if not isinstance(document, dict):
+            raise CredentialsUnobtainableError(shape)
+        username, password = document.get("username"), document.get("password")
+        if not isinstance(username, str) or not isinstance(password, str):
+            raise CredentialsUnobtainableError(shape)
+        return ResolvedCredentials(username, password, self.source)
 
 
 class CredentialChain:

@@ -13,15 +13,24 @@ from typing import Any
 import pymysql
 
 from ._observe import operation
-from ._sql import ER_DBACCESS_DENIED, ER_TABLEACCESS_DENIED, classify, error_code, open_connection
+from ._sql import (
+    ER_DBACCESS_DENIED,
+    ER_TABLEACCESS_DENIED,
+    classify,
+    error_code,
+    literal,
+    open_connection,
+)
 from .connection import Connection
 from .credentials import CredentialSource, ResolvedCredentials
 from .errors import (
     AccessDeniedError,
     AuthenticationFailedError,
+    ConfigurationError,
     CredentialsAbsentError,
     CredentialsUnobtainableError,
     DatabaseUnreachableError,
+    MissingDependencyError,
 )
 from .identifiers import quote_identifier, validate_user_name
 from .server import ServerInfo, detect_server, grantee
@@ -76,7 +85,7 @@ def _as_package_error(exc: pymysql.err.MySQLError) -> Exception:
 def _read_schema_version(cursor: Any, database: str, table_prefix: str) -> SchemaVersion | None:
     table = f"{quote_identifier(database)}.{quote_identifier(table_prefix + 'options')}"
     cursor.execute(
-        f"SELECT option_value FROM {table} WHERE option_name = %s",  # noqa: S608 - quoted identifiers
+        f"SELECT option_value FROM {literal(table)} WHERE option_name = %s",  # noqa: S608 - quoted identifiers
         ("db_version",),
     )
     row = cursor.fetchone()
@@ -164,7 +173,12 @@ def inspect(connection: Connection, credentials: CredentialSource) -> Connection
     with operation("inspect", connection) as fields:
         try:
             resolved = _resolve(credentials)
-        except (CredentialsUnobtainableError, CredentialsAbsentError):
+        except (
+            CredentialsUnobtainableError,
+            CredentialsAbsentError,
+            ConfigurationError,
+            MissingDependencyError,
+        ):
             fields["state"] = str(ConnectionState.CREDENTIALS_UNOBTAINABLE)
             return ConnectionState.CREDENTIALS_UNOBTAINABLE
         try:

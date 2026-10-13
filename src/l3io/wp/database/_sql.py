@@ -15,6 +15,7 @@ ER_ACCESS_DENIED = 1045
 ER_BAD_DB = 1049
 ER_NONEXISTING_GRANT = 1141
 ER_TABLEACCESS_DENIED = 1142
+ER_CANNOT_USER = 1396
 
 
 def open_connection(
@@ -48,3 +49,14 @@ def classify(exc: pymysql.err.MySQLError) -> ConnectionState:
     if code == ER_BAD_DB:
         return ConnectionState.DATABASE_ABSENT
     return ConnectionState.UNREACHABLE
+
+
+def literal(fragment: str) -> str:
+    """Protect an SQL fragment that is pasted into a statement executed WITH arguments.
+
+    PyMySQL substitutes arguments with Python ``%``-formatting whenever any are
+    passed, so a ``%`` inside a quoted identifier (MySQL allows it in database
+    names) would be read as a format directive. Statements executed without
+    arguments must not use this: there the ``%`` is sent as written.
+    """
+    return fragment.replace("%", "%%")

@@ -192,6 +192,7 @@ Initial catalogue:
 | `CLIENT_SERVER_SKEW` | warning | the client tool's family or major version differs from the server's |
 | `END_OF_LIFE_SERVER` | warning | the server version is past upstream end of life (MySQL 8.0, MariaDB 10.2) |
 | `PRIVILEGES_UNVERIFIED` | warning | the administrator holds an active role, whose privileges `information_schema` does not show, so privilege checks were skipped and the operation is attempted |
+| `PASSWORD_UNVERIFIED` | warning | `ensure` ran for an account whose `user_host` does not match this machine, so it did not judge or set an existing password by logging in, and did not verify the result |
 
 Codes are added by the plan that first emits them; the transfer codes above arrive with
 export and import. A test requires every code to be documented in the enum and every
@@ -228,7 +229,7 @@ All signatures take the `Connection` first. `admin` and `credentials` are
 |---|---|---|
 | `ensure(conn, admin, wordpress, *, user_host="%", charset="utf8mb4", collation="utf8mb4_unicode_ci")` | creates the database and account if absent, sets the password if the account cannot log in with it, and grants `ALL` on this database only | admin needs `CREATE`, `CREATE USER`, `GRANT OPTION`, the WordPress privileges (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, `ALTER`, `INDEX`) and **global** `SELECT` |
 | `rotate_password(conn, admin, wordpress, *, user_host="%")` | sets the account's password | `USER_ABSENT`; admin needs `CREATE USER` and global `SELECT` |
-| `revoke(conn, admin, user, *, user_host="%", confirm)` | revokes the account's privileges on this database only; an account holding no grant here is `changed=False` | `confirm` equals `user`; `USER_ABSENT`; admin needs `GRANT OPTION` and global `SELECT` |
+| `revoke(conn, admin, user, *, user_host="%", confirm)` | revokes the account's privileges on this database only — both the escaped grant `ensure` writes and a grant on the unescaped name, which the 0.0.x package wrote and which also matched neighbouring names; an account holding neither is `changed=False` | `confirm` equals `user`; `USER_ABSENT`; admin needs `GRANT OPTION` and global `SELECT` |
 | `drop_user(conn, admin, user, *, user_host="%", confirm)` | drops the account; an absent account is `changed=False` | `confirm` equals `user`; admin needs `CREATE USER` |
 | `drop_database(conn, admin, *, confirm)` | drops the database; an absent database is `changed=False` | `confirm` equals `conn.database`; `LIVE_WORDPRESS_SITE` warning; admin needs `DROP` |
 
@@ -245,6 +246,12 @@ enumerates what WordPress needs; `GRANT ALL` may expand to further privileges on
 server, so an administrator restricted below them passes the check and `ensure` then
 raises `ProvisioningError` naming the steps completed. A rerun after fixing the
 administrator converges, because `ensure` is idempotent.
+
+`ensure` judges an existing account's password by logging in as it, and verifies the
+result the same way. Both are meaningful only when the server would match this machine
+to `user_host`, which `ensure` asks the server. When it would not, `ensure` leaves an
+existing password unchanged, skips the verification, and reports `PASSWORD_UNVERIFIED`;
+`rotate_password` is the explicit way to set that account's password.
 
 Grant targets use `quote_grant_database`, because a database-level GRANT matches
 its target as a `LIKE` pattern: `_` and `%` must be escaped there (AD-28). Every other
@@ -316,7 +323,7 @@ is the family's single encryption format; backup uses the same one for its archi
 - **One span per public operation** (`check_*`, `survey`, `inspect`, `ensure`, `dump`,
   `load`, the drops), each a child of the caller's current span. There are no spans
   per SQL statement or per chunk. Attributes: `db.name`, `server.address`,
-  `server.port`, the server family, and on failure the `Verdict` codes. Error status
+  `server.port`, the server family (`db.system`), and on failure the `Verdict` codes. Error status
   is set on failure. The package depends on `opentelemetry-api` only, so it is inert
   until the host configures an SDK.
 - Every operation's completion event carries `operation`, `outcome` and

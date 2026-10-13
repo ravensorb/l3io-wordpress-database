@@ -134,3 +134,20 @@ def test_revoke_passes_user_and_confirm(monkeypatch: pytest.MonkeyPatch) -> None
         == cli.Exit.OK
     )
     assert seen == {"user": "wpuser", "user_host": "%", "confirm": "wpuser"}
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        (Code.UNREACHABLE, cli.Exit.UNREACHABLE),
+        (Code.CREDENTIALS_UNOBTAINABLE, cli.Exit.CREDENTIALS),
+        (Code.CONFIRMATION_MISMATCH, cli.Exit.REFUSED),
+    ],
+)
+def test_check_exits_as_the_operation_would(
+    monkeypatch: pytest.MonkeyPatch, code: Code, expected: cli.Exit
+) -> None:
+    monkeypatch.setattr(
+        cli, "check_drop_database", lambda *a, **k: Verdict("drop_database", (Finding(code, "x"),))
+    )
+    assert cli.main(["check", "drop-database", *SITE, *ADMIN, "--confirm", "wp_site"]) == expected

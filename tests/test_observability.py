@@ -126,3 +126,44 @@ def test_caller_field_named_self_completes_on_the_success_path(logs: LogCapture)
     record = logs.entries[-1]
     assert record["outcome"] == "succeeded"
     assert record.get("self") != "x"
+
+
+def test_each_warning_is_logged_once_at_warning_level(logs: LogCapture) -> None:
+    verdict = Verdict("drop_database", (Finding(Code.LIVE_WORDPRESS_SITE, "looks live"),))
+    with operation("check_drop_database", CONN) as fields:
+        fields["_verdict"] = verdict
+    warnings = [e for e in logs.entries if e["log_level"] == "warning"]
+    assert [(w["code"], w["operation"]) for w in warnings] == [
+        ("live_wordpress_site", "check_drop_database")
+    ]
+    [done] = [e for e in logs.entries if e["event"] == "operation complete"]
+    assert "_verdict" not in done
+
+
+def test_a_refusal_logs_its_warnings_too(logs: LogCapture) -> None:
+    verdict = Verdict(
+        "drop_database",
+        (Finding(Code.CONFIRMATION_MISMATCH, "no"), Finding(Code.LIVE_WORDPRESS_SITE, "live")),
+    )
+    with pytest.raises(RefusedError), operation("drop_database", CONN):
+        raise RefusedError(verdict)
+    assert [e["code"] for e in logs.entries if e["log_level"] == "warning"] == [
+        "live_wordpress_site"
+    ]
+
+
+def test_server_family_is_recorded_on_the_span() -> None:
+    from l3io.wp.database.server import detect_server
+
+    class _Cursor:
+        def execute(self, sql: str, args: object = None) -> None:
+            pass
+
+        def fetchone(self) -> tuple[str]:
+            return ("11.4.5-MariaDB",)
+
+    with operation("survey", CONN):
+        detect_server(_Cursor())
+    [span] = _EXPORTER.get_finished_spans()
+    assert span.attributes is not None
+    assert span.attributes["db.system"] == "mariadb"

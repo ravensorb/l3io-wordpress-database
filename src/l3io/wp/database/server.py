@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from opentelemetry import trace
+
 #: Floors: MariaDB 10.1 rejects ALTER USER, which provisioning needs.
 _FLOOR = {"mysql": (8, 0, 0), "mariadb": (10, 2, 0)}
 
@@ -16,11 +18,22 @@ _END_OF_LIFE: frozenset[tuple[str, int, int]] = frozenset(
     {
         ("mysql", 5, 7),
         ("mysql", 8, 0),
+        # Innovation releases are supported only until the next one ships.
+        ("mysql", 8, 1),
+        ("mysql", 8, 2),
+        ("mysql", 8, 3),
+        *(("mysql", 9, minor) for minor in range(7)),
         ("mariadb", 10, 1),
         ("mariadb", 10, 2),
         ("mariadb", 10, 3),
         ("mariadb", 10, 4),
         ("mariadb", 10, 5),
+        ("mariadb", 10, 6),  # LTS, ended July 2026
+        # Short-term releases between the 10.11 and 11.4 LTS lines.
+        ("mariadb", 11, 0),
+        ("mariadb", 11, 1),
+        ("mariadb", 11, 2),
+        ("mariadb", 11, 3),
     }
 )
 
@@ -66,7 +79,10 @@ def parse_version(text: str) -> ServerInfo:
 def detect_server(cursor: Any) -> ServerInfo:
     """Ask the server what it is."""
     cursor.execute("SELECT VERSION()")
-    return parse_version(str(cursor.fetchone()[0]))
+    info = parse_version(str(cursor.fetchone()[0]))
+    # Every detection happens inside an operation's span (spec §8).
+    trace.get_current_span().set_attribute("db.system", info.family.value)
+    return info
 
 
 def grantee(user: str, host: str) -> str:

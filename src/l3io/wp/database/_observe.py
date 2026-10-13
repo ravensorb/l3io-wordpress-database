@@ -16,6 +16,7 @@ from opentelemetry import trace
 
 from .connection import Connection
 from .errors import RefusedError
+from .verdict import Verdict
 
 _log = structlog.get_logger("l3io.wp.database")
 _tracer = trace.get_tracer("l3io.wp.database")
@@ -34,6 +35,7 @@ def operation(name: str, connection: Connection) -> Iterator[dict[str, object]]:
             yield fields
         except RefusedError as exc:
             span.set_attribute("l3io.verdict.codes", [str(f.code) for f in exc.verdict.blockers])
+            fields[VERDICT_KEY] = exc.verdict
             _complete(name, connection, "refused", started, fields)
             raise
         except BaseException:
@@ -41,6 +43,10 @@ def operation(name: str, connection: Connection) -> Iterator[dict[str, object]]:
             raise
         _complete(name, connection, "succeeded", started, fields)
 
+
+#: An operation puts its Verdict in the yielded dict under this key, so the
+#: warnings it found are logged once, at WARNING level, however it ends (§6).
+VERDICT_KEY = "_verdict"
 
 #: Parameter names of structlog's call chain (BoundLogger method and _proxy_to_logger).
 #: A caller field with one of these names would collide when passed as a keyword.
@@ -54,6 +60,15 @@ def _complete(
     # must never raise here, because this runs inside the exception handlers.
     # The event name is structlog's first positional parameter, so it travels as a
     # keyword too; otherwise a caller field named "event" collides with it.
+    verdict = fields.pop(VERDICT_KEY, None)
+    if isinstance(verdict, Verdict):
+        for finding in verdict.warnings:
+            _log.warning(
+                event=finding.message,
+                code=str(finding.code),
+                operation=name,
+                database=connection.database,
+            )
     caller_fields = {k: v for k, v in fields.items() if k not in _STRUCTLOG_PARAMETERS}
     event: dict[str, object] = {
         **caller_fields,

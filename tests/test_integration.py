@@ -24,7 +24,15 @@ from l3io.wp.database import (
     WpDatabase,
 )
 from l3io.wp.database.errors import RefusedError
-from l3io.wp.database.provision import check_ensure, ensure
+from l3io.wp.database.provision import (
+    check_drop_database,
+    check_ensure,
+    drop_database,
+    drop_user,
+    ensure,
+    revoke,
+    rotate_password,
+)
 from l3io.wp.database.verdict import Code
 
 pytestmark = pytest.mark.skipif(
@@ -451,3 +459,65 @@ def test_admin_with_only_database_level_select_is_refused(suffix: str) -> None:
         assert finding.fields == {"privilege": "SELECT", "scope": "global"}
     finally:
         admin_sql(f"DROP USER IF EXISTS '{acct}'@'%'")
+
+
+# --- destructive operations (plan 1, task 11) --------------------------------
+
+
+def provisioned(suffix: str) -> Connection:
+    ensure(new_site(suffix), new_admin(), Explicit(f"u_{suffix}", "wp-pass"))
+    return new_site(suffix)
+
+
+def test_drop_database_refuses_a_wrong_confirmation(suffix: str) -> None:
+    conn = provisioned(suffix)
+    with pytest.raises(RefusedError) as info:
+        drop_database(conn, new_admin(), confirm="wp_something_else")
+    assert Code.CONFIRMATION_MISMATCH in info.value.verdict.codes
+    assert survey(conn, new_admin()).database_exists
+
+
+def test_drop_database_warns_on_a_live_site(suffix: str) -> None:
+    conn = provisioned(suffix)
+    admin_sql(
+        f"CREATE TABLE `wp_{suffix}`.`wp_options` "
+        "(option_name VARCHAR(191), option_value LONGTEXT)",
+        f"INSERT INTO `wp_{suffix}`.`wp_options` VALUES ('db_version', '58975')",  # noqa: S608
+    )
+    verdict = check_drop_database(conn, new_admin(), confirm=conn.database)
+    assert verdict.ok
+    assert Code.LIVE_WORDPRESS_SITE in verdict.codes
+
+
+def test_drop_database_twice(suffix: str) -> None:
+    conn = provisioned(suffix)
+    assert drop_database(conn, new_admin(), confirm=conn.database).changed is True
+    assert drop_database(conn, new_admin(), confirm=conn.database).changed is False
+
+
+def test_drop_user_twice(suffix: str) -> None:
+    conn = provisioned(suffix)
+    user = f"u_{suffix}"
+    assert drop_user(conn, new_admin(), user, confirm=user).changed is True
+    assert drop_user(conn, new_admin(), user, confirm=user).changed is False
+
+
+def test_revoke_then_revoke_again(suffix: str) -> None:
+    conn = provisioned(suffix)
+    user = f"u_{suffix}"
+    assert revoke(conn, new_admin(), user, confirm=user).changed is True
+    assert revoke(conn, new_admin(), user, confirm=user).changed is False
+    assert survey(conn, new_admin(), wordpress_user=user).user_privileges == frozenset()
+
+
+def test_revoke_absent_user_is_a_blocker(suffix: str) -> None:
+    conn = new_site(suffix)
+    with pytest.raises(RefusedError) as info:
+        revoke(conn, new_admin(), f"u_{suffix}", confirm=f"u_{suffix}")
+    assert Code.USER_ABSENT in info.value.verdict.codes
+
+
+def test_rotate_password(suffix: str) -> None:
+    conn = provisioned(suffix)
+    rotate_password(conn, new_admin(), Explicit(f"u_{suffix}", "rotated"))
+    pymysql.connect(host=HOST, port=PORT, user=f"u_{suffix}", password="rotated").close()

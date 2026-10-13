@@ -15,7 +15,14 @@ from typing import Any
 import pymysql
 
 from ._observe import operation
-from ._sql import ER_DBACCESS_DENIED, ER_TABLEACCESS_DENIED, classify, error_code, open_connection
+from ._sql import (
+    ER_DBACCESS_DENIED,
+    ER_NONEXISTING_GRANT,
+    ER_TABLEACCESS_DENIED,
+    classify,
+    error_code,
+    open_connection,
+)
 from .connection import Connection
 from .credentials import CredentialSource, Explicit, ResolvedCredentials
 from .errors import (
@@ -126,11 +133,13 @@ def _privilege_findings(
     return missing
 
 
-def _as_package_error(exc: pymysql.err.MySQLError, fallback: type[DatabaseError]) -> DatabaseError:
+def _as_package_error(
+    exc: pymysql.err.MySQLError, fallback: type[DatabaseError], message: str | None = None
+) -> DatabaseError:
     """Translate a server error raised mid-session into a package-owned one."""
     if error_code(exc) in (ER_TABLEACCESS_DENIED, ER_DBACCESS_DENIED):
         return AccessDeniedError(f"the administrator lacks a privilege this operation needs: {exc}")
-    return fallback(f"the server failed during the operation: {exc}")
+    return fallback(message or f"the server failed during the operation: {exc}")
 
 
 def _preflight(
@@ -341,3 +350,305 @@ def ensure(
             granted=result.granted,
         )
         return result
+
+
+@dataclass(frozen=True, slots=True)
+class OperationResult:
+    """Whether an operation changed anything, and what its check found."""
+
+    changed: bool
+    verdict: Verdict
+
+
+#: Reading mysql.user to answer "does this account exist?" needs global SELECT.
+_ACCOUNT_LOOKUP = ("SELECT",)
+
+
+def _confirmation(target: str, confirm: str) -> list[Finding]:
+    if confirm == target:
+        return []
+    return [
+        Finding(
+            Code.CONFIRMATION_MISMATCH,
+            f"confirm={confirm!r} does not match the target {target!r}",
+            {"target": target, "confirm": confirm},
+        )
+    ]
+
+
+def _user_exists(cur: Any, user: str, user_host: str) -> bool:
+    cur.execute("SELECT COUNT(*) FROM mysql.user WHERE User = %s AND Host = %s", (user, user_host))
+    return int(cur.fetchone()[0]) > 0
+
+
+def _looks_live(cur: Any, database: str) -> bool:
+    """Whether the database holds a WordPress options table with a schema version."""
+    cur.execute(
+        "SELECT TABLE_NAME FROM information_schema.TABLES "
+        "WHERE TABLE_SCHEMA = %s AND TABLE_NAME LIKE %s",
+        (database, "%options"),
+    )
+    for (table,) in cur.fetchall():
+        try:
+            cur.execute(
+                f"SELECT COUNT(*) FROM {quote_identifier(database)}.{quote_identifier(table)} "  # noqa: S608 - quoted identifiers
+                "WHERE option_name = %s",
+                ("db_version",),
+            )
+        except pymysql.err.MySQLError:
+            continue  # an "...options" table that is not WordPress's
+        if int(cur.fetchone()[0]) > 0:
+            return True
+    return False
+
+
+def _guarded(
+    connection: Connection,
+    admin: CredentialSource,
+    name: str,
+    required: tuple[str, ...],
+    extra: list[Finding],
+    *,
+    user: tuple[str, str] | None = None,
+    live_check: bool = False,
+) -> tuple[Verdict, Any | None]:
+    """The preflight, plus confirmation, account existence and the live-site warning.
+
+    Returns the verdict and, only when it holds no blocker, the open session.
+    """
+    verdict, session = _preflight(
+        connection, admin, name, required, _ACCOUNT_LOOKUP if user else ()
+    )
+    verdict = verdict.with_findings(*extra)
+    if session is None:
+        return verdict, None
+    try:
+        with session.cursor() as cur:
+            if user is not None and not _user_exists(cur, *user):
+                verdict = verdict.with_findings(
+                    Finding(Code.USER_ABSENT, f"{user[0]!r}@{user[1]!r} does not exist")
+                )
+            if live_check and _looks_live(cur, connection.database):
+                verdict = verdict.with_findings(
+                    Finding(
+                        Code.LIVE_WORDPRESS_SITE,
+                        f"{connection.database!r} holds a WordPress options table with a "
+                        "schema version",
+                    )
+                )
+    except pymysql.err.MySQLError as exc:
+        session.close()
+        raise _as_package_error(exc, DatabaseUnreachableError) from exc
+    except BaseException:
+        session.close()
+        raise
+    if not verdict.ok:
+        session.close()
+        return verdict, None
+    return verdict, session
+
+
+def _check(verdict_and_session: tuple[Verdict, Any | None]) -> Verdict:
+    verdict, session = verdict_and_session
+    if session is not None:
+        session.close()
+    return verdict
+
+
+def _rotate_guard(
+    connection: Connection, admin: CredentialSource, username: str, user_host: str
+) -> tuple[Verdict, Any | None]:
+    return _guarded(
+        connection, admin, "rotate_password", ("CREATE USER",), [], user=(username, user_host)
+    )
+
+
+def check_rotate_password(
+    connection: Connection,
+    admin: CredentialSource,
+    wordpress: CredentialSource,
+    *,
+    user_host: str = "%",
+) -> Verdict:
+    """What :func:`rotate_password` would find, without changing anything."""
+    with operation("check_rotate_password", connection):
+        username = validate_user_name(wordpress.resolve().username)
+        return _check(_rotate_guard(connection, admin, username, user_host))
+
+
+def rotate_password(
+    connection: Connection,
+    admin: CredentialSource,
+    wordpress: CredentialSource,
+    *,
+    user_host: str = "%",
+) -> OperationResult:
+    """Set the account's password to the one ``wordpress`` resolves to."""
+    with operation("rotate_password", connection) as fields:
+        wp = wordpress.resolve()
+        username = validate_user_name(wp.username)
+        verdict, session = _rotate_guard(connection, admin, username, user_host)
+        if session is None:
+            raise RefusedError(verdict)
+        with session, session.cursor() as cur:
+            try:
+                cur.execute("ALTER USER %s@%s IDENTIFIED BY %s", (username, user_host, wp.password))
+                session.commit()
+            except pymysql.err.MySQLError as exc:
+                msg = f"setting the password for {username!r} failed"
+                raise ProvisioningError(msg) from exc
+        fields["changed"] = True
+        return OperationResult(True, verdict)
+
+
+def _revoke_guard(
+    connection: Connection, admin: CredentialSource, user: str, user_host: str, confirm: str
+) -> tuple[Verdict, Any | None]:
+    return _guarded(
+        connection,
+        admin,
+        "revoke",
+        ("GRANT OPTION",),
+        _confirmation(user, confirm),
+        user=(user, user_host),
+    )
+
+
+def check_revoke(
+    connection: Connection,
+    admin: CredentialSource,
+    user: str,
+    *,
+    user_host: str = "%",
+    confirm: str,
+) -> Verdict:
+    """What :func:`revoke` would find, without changing anything."""
+    with operation("check_revoke", connection):
+        validate_user_name(user)
+        return _check(_revoke_guard(connection, admin, user, user_host, confirm))
+
+
+def revoke(
+    connection: Connection,
+    admin: CredentialSource,
+    user: str,
+    *,
+    user_host: str = "%",
+    confirm: str,
+) -> OperationResult:
+    """Revoke the account's privileges on this database only.
+
+    An account holding no grant here is ``changed=False``.
+    """
+    with operation("revoke", connection) as fields:
+        validate_user_name(user)
+        verdict, session = _revoke_guard(connection, admin, user, user_host, confirm)
+        if session is None:
+            raise RefusedError(verdict)
+        changed = True
+        with session, session.cursor() as cur:
+            try:
+                cur.execute(
+                    f"REVOKE ALL PRIVILEGES ON {quote_grant_database(connection.database)}.* "  # noqa: S608 - escaped identifier
+                    "FROM %s@%s",
+                    (user, user_host),
+                )
+                session.commit()
+            except pymysql.err.MySQLError as exc:
+                if error_code(exc) != ER_NONEXISTING_GRANT:
+                    msg = f"revoking {user!r} on {connection.database!r} failed"
+                    raise ProvisioningError(msg) from exc
+                changed = False
+        fields["changed"] = changed
+        return OperationResult(changed, verdict)
+
+
+def _drop_user_guard(
+    connection: Connection, admin: CredentialSource, user: str, confirm: str
+) -> tuple[Verdict, Any | None]:
+    return _guarded(connection, admin, "drop_user", ("CREATE USER",), _confirmation(user, confirm))
+
+
+def check_drop_user(
+    connection: Connection,
+    admin: CredentialSource,
+    user: str,
+    *,
+    user_host: str = "%",  # noqa: ARG001 - kept so check_drop_user mirrors drop_user's signature
+    confirm: str,
+) -> Verdict:
+    """What :func:`drop_user` would find, without changing anything."""
+    with operation("check_drop_user", connection):
+        validate_user_name(user)
+        return _check(_drop_user_guard(connection, admin, user, confirm))
+
+
+def drop_user(
+    connection: Connection,
+    admin: CredentialSource,
+    user: str,
+    *,
+    user_host: str = "%",
+    confirm: str,
+) -> OperationResult:
+    """Drop the account. An absent account is ``changed=False``."""
+    with operation("drop_user", connection) as fields:
+        validate_user_name(user)
+        verdict, session = _drop_user_guard(connection, admin, user, confirm)
+        if session is None:
+            raise RefusedError(verdict)
+        with session, session.cursor() as cur:
+            try:
+                existed = _user_exists(cur, user, user_host)
+                cur.execute("DROP USER IF EXISTS %s@%s", (user, user_host))
+                session.commit()
+            except pymysql.err.MySQLError as exc:
+                msg = f"dropping {user!r} failed"
+                raise _as_package_error(exc, ProvisioningError, msg) from exc
+        fields["changed"] = existed
+        return OperationResult(existed, verdict)
+
+
+def _drop_database_guard(
+    connection: Connection, admin: CredentialSource, confirm: str
+) -> tuple[Verdict, Any | None]:
+    return _guarded(
+        connection,
+        admin,
+        "drop_database",
+        ("DROP",),
+        _confirmation(connection.database, confirm),
+        live_check=True,
+    )
+
+
+def check_drop_database(
+    connection: Connection, admin: CredentialSource, *, confirm: str
+) -> Verdict:
+    """What :func:`drop_database` would find, without changing anything."""
+    with operation("check_drop_database", connection):
+        return _check(_drop_database_guard(connection, admin, confirm))
+
+
+def drop_database(
+    connection: Connection, admin: CredentialSource, *, confirm: str
+) -> OperationResult:
+    """Drop the database. An absent database is ``changed=False``."""
+    with operation("drop_database", connection) as fields:
+        verdict, session = _drop_database_guard(connection, admin, confirm)
+        if session is None:
+            raise RefusedError(verdict)
+        with session, session.cursor() as cur:
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = %s",
+                    (connection.database,),
+                )
+                existed = int(cur.fetchone()[0]) > 0
+                cur.execute(f"DROP DATABASE IF EXISTS {quote_identifier(connection.database)}")
+                session.commit()
+            except pymysql.err.MySQLError as exc:
+                msg = f"dropping {connection.database!r} failed"
+                raise _as_package_error(exc, ProvisioningError, msg) from exc
+        fields["changed"] = existed
+        return OperationResult(existed, verdict)

@@ -126,7 +126,7 @@ type. Built-in sources:
 |---|---|---|
 | `Explicit(username, password)` | the given values | — |
 | `Environment(username_var="DB_USER", password_var="DB_PASSWORD")` | the named variables | — |
-| `WpConfigFile(path)` | `DB_USER`, `DB_PASSWORD` from `wp-config.php` | `wpconfig` |
+| `WpConfigFile(path)` | `DB_USER`, `DB_PASSWORD` from `wp-config.php`; also provides `connection()` (from `DB_HOST`, `DB_NAME`) and `table_prefix` | `wpconfig` |
 | `AwsSecretsManager(secret_id, region=None)` | a JSON secret holding `username` and `password` | `aws` |
 | `CredentialChain(*sources)` | the first source with an answer | — |
 
@@ -191,9 +191,11 @@ Initial catalogue:
 | `LIVE_WORDPRESS_SITE` | warning | a destructive target has a WordPress options table and schema version |
 | `CLIENT_SERVER_SKEW` | warning | the client tool's family or major version differs from the server's |
 | `END_OF_LIFE_SERVER` | warning | the server version is past upstream end of life (MySQL 8.0, MariaDB 10.2) |
+| `PRIVILEGES_UNVERIFIED` | warning | the administrator holds an active role, whose privileges `information_schema` does not show, so privilege checks were skipped and the operation is attempted |
 
-A test requires every code to be documented in the enum and every code to be emitted
-by at least one test.
+Codes are added by the plan that first emits them; the transfer codes above arrive with
+export and import. A test requires every code to be documented in the enum and every
+code to be emitted by at least one test.
 
 ## 7. Operations
 
@@ -224,11 +226,11 @@ All signatures take the `Connection` first. `admin` and `credentials` are
 
 | Operation | Effect | Guard |
 |---|---|---|
-| `ensure(conn, admin, wordpress, *, user_host="%", charset="utf8mb4", collation="utf8mb4_unicode_ci")` | creates the database and account if absent, sets the password if the account cannot log in with it, and grants `ALL` on this database only | — |
-| `rotate_password(conn, admin, wordpress, *, user_host="%")` | sets the account's password | `USER_ABSENT` |
-| `revoke(conn, admin, user, *, user_host="%", confirm)` | revokes the account's privileges on this database only | `confirm` equals `user` |
-| `drop_user(conn, admin, user, *, user_host="%", confirm)` | drops the account | `confirm` equals `user` |
-| `drop_database(conn, admin, *, confirm)` | drops the database | `confirm` equals `conn.database`; `LIVE_WORDPRESS_SITE` warning |
+| `ensure(conn, admin, wordpress, *, user_host="%", charset="utf8mb4", collation="utf8mb4_unicode_ci")` | creates the database and account if absent, sets the password if the account cannot log in with it, and grants `ALL` on this database only | admin needs `CREATE`, `CREATE USER`, `GRANT OPTION`, the WordPress privileges (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `CREATE`, `DROP`, `ALTER`, `INDEX`) and **global** `SELECT` |
+| `rotate_password(conn, admin, wordpress, *, user_host="%")` | sets the account's password | `USER_ABSENT`; admin needs `CREATE USER` and global `SELECT` |
+| `revoke(conn, admin, user, *, user_host="%", confirm)` | revokes the account's privileges on this database only; an account holding no grant here is `changed=False` | `confirm` equals `user`; `USER_ABSENT`; admin needs `GRANT OPTION` and global `SELECT` |
+| `drop_user(conn, admin, user, *, user_host="%", confirm)` | drops the account; an absent account is `changed=False` | `confirm` equals `user`; admin needs `CREATE USER` |
+| `drop_database(conn, admin, *, confirm)` | drops the database; an absent database is `changed=False` | `confirm` equals `conn.database`; `LIVE_WORDPRESS_SITE` warning; admin needs `DROP` |
 
 `ensure` queries the administrator's catalog first and runs only the statements that
 change something. `EnsureResult` reports `created_database`, `created_user`,
@@ -237,7 +239,12 @@ change something. `EnsureResult` reports `created_database`, `created_user`,
 executes no write. Statements are portable across MySQL 8.0 to 9.x and MariaDB:
 `CREATE USER IF NOT EXISTS`, `ALTER USER` for the password, and `GRANT` without
 `IDENTIFIED BY`. The authentication plugin is never named, so each server uses its
-own default (`mysql_native_password` is absent from MySQL 9).
+own default (`mysql_native_password` is absent from MySQL 9). `charset` and `collation`
+cannot be parameterised, so they are restricted to `^[A-Za-z0-9_]+$`. The privilege check
+enumerates what WordPress needs; `GRANT ALL` may expand to further privileges on a given
+server, so an administrator restricted below them passes the check and `ensure` then
+raises `ProvisioningError` naming the steps completed. A rerun after fixing the
+administrator converges, because `ensure` is idempotent.
 
 Grant targets use `quote_grant_database`, because a database-level GRANT matches
 its target as a `LIKE` pattern: `_` and `%` must be escaped there (AD-28). Every other
@@ -333,8 +340,10 @@ The `l3io-wordpress-database` command has one subcommand per operation (`survey`
   requires `--replace NAME`.
 - `--log-level` (default `INFO`) and `--log-format console|json`, consistent with
   backup.
-- Distinct exit codes per outcome class: success, usage, refused (a blocker),
-  credentials, unreachable, operation failed. They are part of the CLI contract.
+- Results are printed as JSON on stdout; errors go to stderr.
+- Distinct exit codes per outcome class, part of the CLI contract: `0` success, `1`
+  operation failed, `2` usage, `3` refused (a blocker), `4` credentials, `5`
+  unreachable, `7` not ready (`inspect` found the account cannot use the database).
 
 ## 10. Errors
 
@@ -349,6 +358,7 @@ each is wrapped with `raise ... from` (AD-14).
 | `InvalidArgumentsError`, `InvalidIdentifierError`, `InvalidDatabaseNameError` | rejected input |
 | `ConfigUnreadableError`, `MissingConfigValueError` | `wp-config.php` could not supply a value |
 | `ProvisioningError` | a provisioning operation started and failed; carries the statements completed |
+| `DatabaseUnreachableError`, `AuthenticationFailedError`, `AccessDeniedError` | raised by the read operations `survey` and `schema_version`, which have no check form, and by a server error mid-operation |
 | `TransferError(verdict, exit_code, stderr)` | a dump or load started and failed; stderr is redacted |
 | `DecryptionError` | wrong identity, kept distinct from a corrupt or truncated stream |
 
@@ -506,8 +516,12 @@ Each item is settled by a test or a probe before its dependent code is written.
 - **V4** `pyrage` distinguishes a wrong identity from a corrupt stream well enough for
   `DecryptionError` to be distinct.
 - **V5** Option-file value escaping rules for both client families.
-- **V6** Privilege detection without parsing `SHOW GRANTS` text (for example through
-  `information_schema`), including MySQL 8 roles.
+- **V6 — settled 2026-10-12.** `information_schema.USER_PRIVILEGES` and
+  `SCHEMA_PRIVILEGES` answer privilege questions on MySQL 8.0/8.4/9.7 and MariaDB
+  10.2/11.4. `SCHEMA_PRIVILEGES.TABLE_SCHEMA` stores the escaped grant pattern (`wp\_x`),
+  so `%s LIKE TABLE_SCHEMA` reproduces the server's match. Privileges held through an
+  active role are not listed, hence `PRIVILEGES_UNVERIFIED`. `CURRENT_ROLE()` is `NONE`
+  (MySQL) or `NULL` (MariaDB) when no role is active.
 - **V7** Every dump default is accepted by every client in the matrix
   (`--set-gtid-purged` is MySQL-only; `--no-tablespaces` on MariaDB).
 - **V8** Reading a child's `/proc/<pid>/environ` and `cmdline` from the test process

@@ -271,3 +271,50 @@ Delete the section once it has been acted on or declined. The same text is in
 
    This repo's suite already passes against config's development build: 128 passed, and
    13 skipped for want of MySQL.
+
+---
+
+## Update — 2026-10-13: plan 1 (core API) complete on `feat/plan-1-core-api`
+
+Spec `_bmad-output/planning-artifacts/spec/2026-10-12-l3io-wordpress-database-design.md`
+(amended); plan `_bmad-output/planning-artifacts/plans/2026-10-12-plan-1-core-api.md`.
+Branch is local, not pushed; local branch `legacy/main` preserves the pre-cleanup `main`.
+
+- [done] Tasks 0–15 and a whole-branch review (1 critical, 7 important, all fixed with
+  failing-first tests, `f3d89e5`). `make check` 254 passed; integration 40/40 on MySQL 8.4
+  and MariaDB 11.4; `make ci` all five jobs; alignment 0 findings.
+- [note] Shawn's BMad-upgrade commits `660fdfd` and `0ea13a0` swept in this branch's
+  in-progress `inspection.py` and `provision.py`; the code at HEAD is reviewed and correct,
+  only the attribution is off. History not rewritten.
+- [todo — plan 3] coverage floor (§13); every-code-emitted check; the three items from the
+  wordpress-config note above.
+
+### Open deferred minors (carry into plans 2–3)
+
+- `Finding.fields` is a `MappingProxyType`: `Finding`/`Verdict`/`RefusedError` cannot be
+  pickled, deep-copied or hashed.
+- `grantee()` does not double `'`; a user name containing `'` re-grants every run — forbid
+  `'` in `validate_user_name`.
+- A more specific host account (`'u'@'localhost'`) can shadow `'%'` and break idempotence.
+- Role-held admin privileges: grant rows may be invisible (`granted=True` every run);
+  `PRIVILEGES_UNVERIFIED` is tested only with a fake cursor.
+- Every non-auth connect failure is reported `UNREACHABLE` (TLS, too many connections);
+  mid-session preflight errors map to `DatabaseUnreachableError`; `schema_version` maps
+  every post-connect error to `AccessDeniedError`.
+- `ensure` can leak the admin session when the user name is invalid (validated after the
+  preflight); `check_ensure` does not validate `charset`/`collation`.
+- Spec/code disagreements: §7.2 says `CREATE USER IF NOT EXISTS` (code: `CREATE USER`);
+  §9 names `--admin-user-env`/`--db-user-env` (CLI takes the user name as a value).
+- `_looks_live` skips a table it cannot read, silently losing `LIVE_WORDPRESS_SITE`.
+- `Connection.from_db_host` rejects `host:/path.sock` and `[::1]:3306` (loud, untested).
+- An unknown `--log-level` silently becomes INFO.
+- `tests/test_facade.py` lists operations by hand (global rule 4).
+- Survey: validates the user name after connecting; a non-integer `db_version` raises
+  `AccessDeniedError` and aborts survey; `table_count` counts views.
+- Observability: a refusal marks the span ERROR while the log says "refused";
+  `set_tracer_provider` at test-module import; `except BaseException` labels interrupts
+  "failed".
+- Test gaps: `Connection(host="")`, `from_db_host(":3307")`, bool port; `classify()`
+  fallback; `_ensure_facts` error translation; `duration_ms` on refused/failed events;
+  mutating a caller dict after `Finding` construction.
+- Leftover `# tests/<file>.py` header comments copied from plan briefs.

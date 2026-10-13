@@ -23,6 +23,9 @@ from l3io.wp.database import (
     WpCredentials,
     WpDatabase,
 )
+from l3io.wp.database.errors import RefusedError
+from l3io.wp.database.provision import check_ensure, ensure
+from l3io.wp.database.verdict import Code
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("DB_HOST"), reason="DB_HOST not set; integration tests skipped"
@@ -337,3 +340,73 @@ def test_survey_without_select_on_options_raises_access_denied(suffix: str) -> N
             survey(Connection(host=HOST, port=PORT, database=name), Explicit(viewer, "p"))
     finally:
         admin_sql(f"DROP USER IF EXISTS '{viewer}'@'%'")
+
+
+def new_site(suffix: str) -> Connection:
+    return Connection(host=HOST, port=PORT, database=f"wp_{suffix}")
+
+
+def test_ensure_fresh_site_reports_what_it_created(suffix: str) -> None:
+    result = ensure(new_site(suffix), new_admin(), Explicit(f"u_{suffix}", "wp-pass"))
+    assert (result.created_database, result.created_user, result.password_set, result.granted) == (
+        True,
+        True,
+        True,
+        True,
+    )
+
+
+def test_second_ensure_changes_nothing_with_underscore_name(suffix: str) -> None:
+    wp = Explicit(f"u_{suffix}", "wp-pass")
+    ensure(new_site(suffix), new_admin(), wp)
+    again = ensure(new_site(suffix), new_admin(), wp)
+    assert not again.changed
+
+
+def test_existing_database_without_user_is_not_reported_as_created(suffix: str) -> None:
+    admin_sql(f"CREATE DATABASE `wp_{suffix}`")
+    result = ensure(new_site(suffix), new_admin(), Explicit(f"u_{suffix}", "wp-pass"))
+    assert result.created_database is False
+    assert result.created_user is True
+
+
+def test_wrong_password_is_reset_and_reported(suffix: str) -> None:
+    ensure(new_site(suffix), new_admin(), Explicit(f"u_{suffix}", "first"))
+    result = ensure(new_site(suffix), new_admin(), Explicit(f"u_{suffix}", "second"))
+    assert (result.created_user, result.password_set, result.granted) == (False, True, False)
+
+
+@pytest.mark.parametrize(
+    "password", ["q'uo\"te", "back\\slash", "hash#semi;", "ab);cd", " spaced "]
+)
+def test_awkward_password_round_trips(suffix: str, password: str) -> None:
+    ensure(new_site(suffix), new_admin(), Explicit(f"u_{suffix}", password))
+    conn = pymysql.connect(
+        host=HOST, port=PORT, user=f"u_{suffix}", password=password, database=f"wp_{suffix}"
+    )
+    conn.close()
+
+
+def test_grant_does_not_reach_a_name_matching_the_unescaped_pattern(suffix: str) -> None:
+    admin_sql(f"CREATE DATABASE `wpX{suffix}`")
+    ensure(new_site(suffix), new_admin(), Explicit(f"u_{suffix}", "wp-pass"))
+    conn = pymysql.connect(host=HOST, port=PORT, user=f"u_{suffix}", password="wp-pass")
+    with conn, conn.cursor() as cur:
+        cur.execute("SHOW DATABASES")
+        visible = {r[0] for r in cur.fetchall()}
+    assert f"wp_{suffix}" in visible
+    assert f"wpX{suffix}" not in visible
+
+
+def test_wrong_admin_password_is_a_coded_refusal(suffix: str) -> None:
+    verdict = check_ensure(new_site(suffix), Explicit(ADMIN_USER, "wrong"), Explicit("u", "p"))
+    assert verdict.codes == frozenset({Code.AUTHENTICATION_FAILED})
+    with pytest.raises(RefusedError) as info:
+        ensure(new_site(suffix), Explicit(ADMIN_USER, "wrong"), Explicit("u", "p"))
+    assert info.value.verdict == verdict
+
+
+def test_check_and_run_agree_on_unreachable() -> None:
+    conn = Connection(host="127.0.0.1", port=1, database="wp_x")
+    verdict = check_ensure(conn, new_admin(), Explicit("u", "p"))
+    assert Code.UNREACHABLE in verdict.codes

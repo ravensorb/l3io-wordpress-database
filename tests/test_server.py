@@ -98,7 +98,12 @@ def test_account_privileges_merges_global_and_schema() -> None:
         ]
     )
     privs = account_privileges(cursor, "wp_site")
-    assert privs == Privileges(frozenset({"CREATE USER", "SELECT", "DROP"}), True, False)
+    assert privs == Privileges(
+        frozenset({"CREATE USER", "SELECT", "DROP"}),
+        True,
+        False,
+        frozenset({"CREATE USER", "SELECT"}),
+    )
     assert privs.has("GRANT OPTION")
     assert cursor.executed[2][1] == ("'admin'@'%'",)
     assert cursor.executed[3][1] == ("'admin'@'%'", "wp_site")

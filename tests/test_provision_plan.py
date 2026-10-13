@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import pymysql
 import pytest
 
 from l3io.wp.database import provision
-from l3io.wp.database.errors import InvalidArgumentsError
+from l3io.wp.database.connection import Connection
+from l3io.wp.database.credentials import Explicit
+from l3io.wp.database.errors import DatabaseError, InvalidArgumentsError
 from l3io.wp.database.identifiers import (
     grant_pattern,
     quote_grant_database,
@@ -67,12 +70,67 @@ def test_privilege_findings_for_ensure() -> None:
 
 
 def test_missing_select_is_a_blocker() -> None:
-    privs = Privileges(frozenset({"CREATE", "CREATE USER"}), grantable=True, unverified=False)
-    [finding] = provision._privilege_findings(privs, provision.ENSURE_PRIVILEGES)
+    privs = Privileges(
+        frozenset(provision.ENSURE_PRIVILEGES) | {"CREATE USER"},
+        grantable=True,
+        unverified=False,
+        global_names=frozenset(),
+    )
+    [finding] = provision._privilege_findings(
+        privs, provision.ENSURE_PRIVILEGES, provision.ENSURE_GLOBAL_PRIVILEGES
+    )
     assert finding.fields["privilege"] == "SELECT"
 
 
 def test_role_turns_blockers_into_one_warning() -> None:
     privs = Privileges(frozenset(), grantable=False, unverified=True)
-    [finding] = provision._privilege_findings(privs, provision.ENSURE_PRIVILEGES)
+    [finding] = provision._privilege_findings(
+        privs, provision.ENSURE_PRIVILEGES, provision.ENSURE_GLOBAL_PRIVILEGES
+    )
     assert finding.code is Code.PRIVILEGES_UNVERIFIED
+
+
+def test_database_level_select_does_not_satisfy_global_select() -> None:
+    privs = Privileges(
+        frozenset({"SELECT"}), grantable=True, unverified=False, global_names=frozenset()
+    )
+    [finding] = provision._privilege_findings(privs, (), provision.ENSURE_GLOBAL_PRIVILEGES)
+    assert finding.fields == {"privilege": "SELECT", "scope": "global"}
+
+
+def test_every_wordpress_privilege_is_required_of_the_grantor() -> None:
+    assert set(provision.ENSURE_PRIVILEGES) >= provision.WORDPRESS_PRIVILEGES
+
+
+class _ExplodingCursor:
+    def __enter__(self) -> _ExplodingCursor:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def execute(self, *args: object) -> None:
+        raise pymysql.err.OperationalError(2013, "lost")
+
+
+class _Session:
+    closed = False
+
+    def cursor(self) -> _ExplodingCursor:
+        return _ExplodingCursor()
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_server_error_in_preflight_is_package_owned_and_closes_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _Session()
+    monkeypatch.setattr(provision, "open_connection", lambda *a, **k: session)
+    with pytest.raises(DatabaseError) as info:
+        provision._preflight(
+            Connection(host="h", database="wp_x"), Explicit("a", "b"), "ensure", ()
+        )
+    assert not isinstance(info.value, pymysql.err.MySQLError)
+    assert session.closed

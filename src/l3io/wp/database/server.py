@@ -81,9 +81,14 @@ class Privileges:
     names: frozenset[str]
     grantable: bool
     unverified: bool
+    #: Only the privileges held on ``*.*``; ``names`` also holds database-level ones.
+    global_names: frozenset[str] = frozenset()
 
     def has(self, name: str) -> bool:
         return self.grantable if name == "GRANT OPTION" else name in self.names
+
+    def has_global(self, name: str) -> bool:
+        return name in self.global_names
 
 
 def account_privileges(cursor: Any, database: str) -> Privileges:
@@ -106,6 +111,7 @@ def account_privileges(cursor: Any, database: str) -> Privileges:
         (who,),
     )
     rows = list(cursor.fetchall())
+    global_names = frozenset(str(r[0]) for r in rows)
     cursor.execute(
         "SELECT PRIVILEGE_TYPE, IS_GRANTABLE FROM information_schema.SCHEMA_PRIVILEGES "
         "WHERE GRANTEE = %s AND %s LIKE TABLE_SCHEMA",
@@ -114,4 +120,4 @@ def account_privileges(cursor: Any, database: str) -> Privileges:
     rows += list(cursor.fetchall())
     names = frozenset(str(r[0]) for r in rows)
     grantable = any(str(r[1]).upper() == "YES" for r in rows)
-    return Privileges(names, grantable, unverified)
+    return Privileges(names, grantable, unverified, global_names)

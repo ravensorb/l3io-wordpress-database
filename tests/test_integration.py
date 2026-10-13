@@ -410,3 +410,44 @@ def test_check_and_run_agree_on_unreachable() -> None:
     conn = Connection(host="127.0.0.1", port=1, database="wp_x")
     verdict = check_ensure(conn, new_admin(), Explicit("u", "p"))
     assert Code.UNREACHABLE in verdict.codes
+
+
+_WP_PRIVS = "SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX"
+
+
+def test_admin_lacking_wordpress_privileges_is_refused_before_anything_runs(suffix: str) -> None:
+    acct = f"a_{suffix}"
+    admin_sql(
+        f"CREATE USER '{acct}'@'%' IDENTIFIED BY 'ap'",
+        f"GRANT CREATE, CREATE USER, SELECT ON *.* TO '{acct}'@'%' WITH GRANT OPTION",
+    )
+    try:
+        limited = Explicit(acct, "ap")
+        wp = Explicit(f"u_{suffix}", "wp-pass")
+        verdict = check_ensure(new_site(suffix), limited, wp)
+        assert not verdict.ok
+        missing = {
+            f.fields["privilege"] for f in verdict.findings if f.code is Code.MISSING_PRIVILEGE
+        }
+        assert missing == {"INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "INDEX"}
+        with pytest.raises(RefusedError):
+            ensure(new_site(suffix), limited, wp)
+        assert not survey(new_site(suffix), new_admin()).database_exists
+    finally:
+        admin_sql(f"DROP USER IF EXISTS '{acct}'@'%'")
+
+
+def test_admin_with_only_database_level_select_is_refused(suffix: str) -> None:
+    acct = f"a_{suffix}"
+    other = ", ".join(p for p in _WP_PRIVS.split(", ") if p != "SELECT")
+    admin_sql(
+        f"CREATE USER '{acct}'@'%' IDENTIFIED BY 'ap'",
+        f"GRANT {other}, CREATE USER ON *.* TO '{acct}'@'%' WITH GRANT OPTION",
+        f"GRANT SELECT ON `wp\\_{suffix}`.* TO '{acct}'@'%'",
+    )
+    try:
+        verdict = check_ensure(new_site(suffix), Explicit(acct, "ap"), Explicit("u", "p"))
+        [finding] = [f for f in verdict.findings if f.code is Code.MISSING_PRIVILEGE]
+        assert finding.fields == {"privilege": "SELECT", "scope": "global"}
+    finally:
+        admin_sql(f"DROP USER IF EXISTS '{acct}'@'%'")

@@ -15,12 +15,15 @@ from typing import Any
 import pymysql
 
 from ._observe import operation
-from ._sql import classify, open_connection
+from ._sql import ER_DBACCESS_DENIED, ER_TABLEACCESS_DENIED, classify, error_code, open_connection
 from .connection import Connection
 from .credentials import CredentialSource, Explicit, ResolvedCredentials
 from .errors import (
+    AccessDeniedError,
     CredentialsAbsentError,
     CredentialsUnobtainableError,
+    DatabaseError,
+    DatabaseUnreachableError,
     ProvisioningError,
     RefusedError,
 )
@@ -39,7 +42,15 @@ from .verdict import Code, Finding, Verdict
 WORDPRESS_PRIVILEGES = frozenset(
     {"SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "INDEX"}
 )
-ENSURE_PRIVILEGES = ("CREATE", "CREATE USER", "SELECT", "GRANT OPTION")
+#: GRANT ALL needs the grantor to hold what it grants, not only GRANT OPTION.
+ENSURE_PRIVILEGES = (
+    "CREATE",
+    "CREATE USER",
+    "GRANT OPTION",
+    *sorted(WORDPRESS_PRIVILEGES - {"CREATE"}),
+)
+#: Reading ``mysql.user`` needs SELECT on ``*.*``; a database-level SELECT is not enough.
+ENSURE_GLOBAL_PRIVILEGES = ("SELECT",)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +92,11 @@ def plan_ensure(facts: EnsureFacts) -> tuple[str, ...]:
     return tuple(steps)
 
 
-def _privilege_findings(privileges: Privileges, required: tuple[str, ...]) -> list[Finding]:
+def _privilege_findings(
+    privileges: Privileges,
+    required: tuple[str, ...],
+    global_required: tuple[str, ...] = (),
+) -> list[Finding]:
     if privileges.unverified:
         return [
             Finding(
@@ -90,7 +105,7 @@ def _privilege_findings(privileges: Privileges, required: tuple[str, ...]) -> li
                 "checked in advance, so the operation will be attempted",
             )
         ]
-    return [
+    missing = [
         Finding(
             Code.MISSING_PRIVILEGE,
             f"the administrator lacks {name}",
@@ -99,6 +114,23 @@ def _privilege_findings(privileges: Privileges, required: tuple[str, ...]) -> li
         for name in required
         if not privileges.has(name)
     ]
+    missing += [
+        Finding(
+            Code.MISSING_PRIVILEGE,
+            f"the administrator lacks {name} on *.*",
+            {"privilege": name, "scope": "global"},
+        )
+        for name in global_required
+        if not privileges.has_global(name)
+    ]
+    return missing
+
+
+def _as_package_error(exc: pymysql.err.MySQLError, fallback: type[DatabaseError]) -> DatabaseError:
+    """Translate a server error raised mid-session into a package-owned one."""
+    if error_code(exc) in (ER_TABLEACCESS_DENIED, ER_DBACCESS_DENIED):
+        return AccessDeniedError(f"the administrator lacks a privilege this operation needs: {exc}")
+    return fallback(f"the server failed during the operation: {exc}")
 
 
 def _preflight(
@@ -106,6 +138,7 @@ def _preflight(
     admin: CredentialSource,
     operation_name: str,
     required: tuple[str, ...],
+    global_required: tuple[str, ...] = (),
 ) -> tuple[Verdict, Any | None]:
     """Connect as the administrator and check server and privileges.
 
@@ -132,27 +165,36 @@ def _preflight(
             )
         return verdict.with_findings(finding), None
 
-    with session.cursor() as cur:
-        server = detect_server(cur)
-        findings: list[Finding] = []
-        if not server.is_supported:
-            findings.append(
-                Finding(
-                    Code.SERVER_UNSUPPORTED,
-                    f"{server.family} {server.version_text} is below the supported floor",
-                    {"version": server.version_text},
+    try:
+        with session.cursor() as cur:
+            server = detect_server(cur)
+            findings: list[Finding] = []
+            if not server.is_supported:
+                findings.append(
+                    Finding(
+                        Code.SERVER_UNSUPPORTED,
+                        f"{server.family} {server.version_text} is below the supported floor",
+                        {"version": server.version_text},
+                    )
                 )
-            )
-        elif server.is_end_of_life:
-            findings.append(
-                Finding(
-                    Code.END_OF_LIFE_SERVER,
-                    f"{server.family} {server.version_text} is past upstream end of life",
-                    {"version": server.version_text},
+            elif server.is_end_of_life:
+                findings.append(
+                    Finding(
+                        Code.END_OF_LIFE_SERVER,
+                        f"{server.family} {server.version_text} is past upstream end of life",
+                        {"version": server.version_text},
+                    )
                 )
+            findings += _privilege_findings(
+                account_privileges(cur, connection.database), required, global_required
             )
-        findings += _privilege_findings(account_privileges(cur, connection.database), required)
-    verdict = verdict.with_findings(*findings)
+        verdict = verdict.with_findings(*findings)
+    except pymysql.err.MySQLError as exc:
+        session.close()
+        raise _as_package_error(exc, DatabaseUnreachableError) from exc
+    except BaseException:
+        session.close()
+        raise
     if not verdict.ok:
         session.close()
         return verdict, None
@@ -199,7 +241,9 @@ def check_ensure(
 ) -> Verdict:
     """What :func:`ensure` would find, without changing anything."""
     with operation("check_ensure", connection):
-        verdict, session = _preflight(connection, admin, "ensure", ENSURE_PRIVILEGES)
+        verdict, session = _preflight(
+            connection, admin, "ensure", ENSURE_PRIVILEGES, ENSURE_GLOBAL_PRIVILEGES
+        )
         if session is not None:
             session.close()
         try:
@@ -229,7 +273,9 @@ def ensure(
     validate_charset(charset, "charset")
     validate_charset(collation, "collation")
     with operation("ensure", connection) as fields:
-        verdict, session = _preflight(connection, admin, "ensure", ENSURE_PRIVILEGES)
+        verdict, session = _preflight(
+            connection, admin, "ensure", ENSURE_PRIVILEGES, ENSURE_GLOBAL_PRIVILEGES
+        )
         try:
             wp = wordpress.resolve()
         except (CredentialsUnobtainableError, CredentialsAbsentError) as exc:
@@ -262,7 +308,10 @@ def ensure(
         }
         completed: list[str] = []
         with session, session.cursor() as cur:
-            steps = plan_ensure(_ensure_facts(cur, connection, wp, user_host))
+            try:
+                steps = plan_ensure(_ensure_facts(cur, connection, wp, user_host))
+            except pymysql.err.MySQLError as exc:
+                raise _as_package_error(exc, ProvisioningError) from exc
             try:
                 for step in steps:
                     sql, args = statements[step]

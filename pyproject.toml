@@ -192,6 +192,11 @@ explicit_package_bases = true
 module = ["boto3", "boto3.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# pyrage lives behind the `encryption` extra and ships no type information.
+module = ["pyrage", "pyrage.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

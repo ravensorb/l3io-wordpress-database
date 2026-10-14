@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
+import structlog
 
 from l3io.wp.database import cli
 from l3io.wp.database.provision import EnsureResult, OperationResult
@@ -21,6 +23,14 @@ ADMIN = ["--admin-user", "root", "--admin-password-env", "ADMIN_PW"]
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("WP_PW", "wp-secret")
     monkeypatch.setenv("ADMIN_PW", "admin-secret")
+
+
+@pytest.fixture(autouse=True)
+def _restore_structlog() -> Iterator[None]:
+    """main() binds structlog to this test's stderr, which capsys closes afterwards."""
+    saved = structlog.get_config()
+    yield
+    structlog.configure(**saved)
 
 
 def _actions(parser: Any) -> list[Any]:
@@ -151,3 +161,76 @@ def test_check_exits_as_the_operation_would(
         cli, "check_drop_database", lambda *a, **k: Verdict("drop_database", (Finding(code, "x"),))
     )
     assert cli.main(["check", "drop-database", *SITE, *ADMIN, "--confirm", "wp_site"]) == expected
+
+
+def test_dump_to_stdout_keeps_json_off_stdout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from l3io.wp.database.server import parse_version
+    from l3io.wp.database.transfer import TransferResult
+
+    def fake_dump(connection, credentials, to, **kw):  # type: ignore[no-untyped-def]
+        structlog.get_logger().info("dumping", database=connection.database)
+        to.write(b"SELECT 1;\n")
+        return TransferResult(10, 1.0, "mysqldump 8.4", parse_version("8.4.11"), Verdict("dump"))
+
+    monkeypatch.setattr(cli, "dump", fake_dump)
+    argv = ["--log-format", "json", "dump", *SITE, *WP, "--output", "-"]
+    assert cli.main(argv) == cli.Exit.OK
+    captured = capsys.readouterr()
+    assert captured.out == "SELECT 1;\n", "only the dump may reach stdout"
+    assert '"bytes": 10' in captured.err
+    assert '"event": "dumping"' in captured.err
+
+
+def test_load_passes_replace_and_options(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    from l3io.wp.database.server import parse_version
+    from l3io.wp.database.transfer import TransferResult
+
+    seen: dict[str, Any] = {}
+
+    def fake_load(connection, credentials, source, **kw):  # type: ignore[no-untyped-def]
+        seen.update(source=source, **kw)
+        return TransferResult(0, 1.0, "mysql 8.4", parse_version("8.4.11"), Verdict("load"))
+
+    monkeypatch.setattr(cli, "load", fake_load)
+    dump_file = tmp_path / "x.sql"
+    dump_file.write_text("SELECT 1;\n")
+    # Given separately, argparse would read "--binary-mode" as an option, not --option's value.
+    code = cli.main(
+        [
+            "load",
+            *SITE,
+            *WP,
+            "--input",
+            str(dump_file),
+            "--replace",
+            "wp_site",
+            "--option=--binary-mode",
+        ]
+    )
+    assert code == cli.Exit.OK
+    assert (seen["source"], seen["replace"], seen["options"]) == (
+        str(dump_file),
+        "wp_site",
+        ["--binary-mode"],
+    )
+
+
+def test_check_transfer_needs_no_admin_account(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_check_load(connection, credentials, **kw):  # type: ignore[no-untyped-def]
+        seen.update(credentials=credentials.resolve(), **kw)
+        return Verdict("load")
+
+    monkeypatch.setattr(cli, "check_dump", lambda *a, **k: Verdict("dump"))
+    monkeypatch.setattr(cli, "check_load", fake_check_load)
+    assert cli.main(["check", "dump", *SITE, *WP, "--output", "-"]) == cli.Exit.OK
+    assert json.loads(capsys.readouterr().out)["operation"] == "dump"
+    assert cli.main(["check", "load", *SITE, *WP, "--input", "-"]) == cli.Exit.OK
+    assert json.loads(capsys.readouterr().out)["operation"] == "load"
+    assert seen["credentials"].username == "wpuser"
+    assert seen["source"] is None

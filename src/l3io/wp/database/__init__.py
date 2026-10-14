@@ -11,6 +11,7 @@ from here rather than reimplementing it.
 
 from __future__ import annotations
 
+from ._client import ClientTool
 from ._version import __version__
 from .connection import DEFAULT_PORT, Connection
 from .credentials import (
@@ -21,15 +22,18 @@ from .credentials import (
     Explicit,
     ResolvedCredentials,
 )
+from .encryption import generate_identity
 from .errors import (
     AccessDeniedError,
     AuthenticationFailedError,
     ConfigUnreadableError,
     ConfigurationError,
+    CorruptDumpError,
     CredentialsAbsentError,
     CredentialsUnobtainableError,
     DatabaseError,
     DatabaseUnreachableError,
+    DecryptionError,
     InvalidArgumentsError,
     InvalidDatabaseNameError,
     InvalidIdentifierError,
@@ -38,6 +42,7 @@ from .errors import (
     ProvisioningError,
     RefusedError,
     RegionNotKnownError,
+    TransferError,
 )
 from .facade import Database
 from .identifiers import (
@@ -63,6 +68,15 @@ from .provision import (
 )
 from .server import ServerFamily, ServerInfo
 from .state import ConnectionState
+from .transfer import (
+    DumpStream,
+    TransferResult,
+    check_dump,
+    check_load,
+    dump,
+    iter_dump,
+    load,
+)
 from .verdict import Code, Finding, Severity, Verdict
 from .versions import SUPPORTED_FROM, SchemaVersion, release_for
 from .wpconfig import DEFAULT_TABLE_PREFIX, WpConfigFile
@@ -71,11 +85,13 @@ __all__ = [
     "AccessDeniedError",
     "AuthenticationFailedError",
     "AwsSecretsManager",
+    "ClientTool",
     "Code",
     "ConfigUnreadableError",
     "ConfigurationError",
     "Connection",
     "ConnectionState",
+    "CorruptDumpError",
     "CredentialChain",
     "CredentialSource",
     "CredentialsAbsentError",
@@ -85,6 +101,8 @@ __all__ = [
     "Database",
     "DatabaseError",
     "DatabaseUnreachableError",
+    "DecryptionError",
+    "DumpStream",
     "EnsureResult",
     "Environment",
     "Explicit",
@@ -105,18 +123,26 @@ __all__ = [
     "ServerInfo",
     "Severity",
     "Survey",
+    "TransferError",
+    "TransferResult",
     "Verdict",
     "WpConfigFile",
     "__version__",
     "check_drop_database",
     "check_drop_user",
+    "check_dump",
     "check_ensure",
+    "check_load",
     "check_revoke",
     "check_rotate_password",
     "drop_database",
     "drop_user",
+    "dump",
     "ensure",
+    "generate_identity",
     "inspect",
+    "iter_dump",
+    "load",
     "quote_grant_database",
     "quote_identifier",
     "release_for",

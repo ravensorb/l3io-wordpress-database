@@ -36,35 +36,42 @@ CONN = Connection(host="127.0.0.1", port=1, database="wp_site")
 WORDPRESS = Explicit("wpuser", SECRET)
 
 
-@pytest.mark.skip(reason="replaced by the subprocess scope guard in plan 2 task 10")
-def test_no_module_spawns_a_subprocess() -> None:
-    """A scope guard, not a style rule.
+#: The only modules allowed to start processes; each call must pass env=.
+SPAWNERS = {"_client.py", "transfer.py"}
 
-    Nothing here shells out today, so "no password in argv" is currently
-    vacuous. This test is what makes it stay true: the moment someone adds a
-    mysql or mysqldump call, it fires, and they have to deal with credential
-    transport deliberately -- `--defaults-file` at mode 0600 rather than
-    `--defaults-extra-file`, which is additive and lets an ambient ~/.my.cnf
-    redirect the connection, and never MYSQL_PWD, which MySQL 8.4 calls
-    extremely insecure.
-    """
-    offenders: list[str] = []
-    for path in SRC.rglob("*.py"):
-        tree = ast.parse(path.read_text())
+
+def _subprocess_users() -> dict[str, ast.Module]:
+    found: dict[str, ast.Module] = {}
+    for path in sorted(SRC.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            names = []
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                names = [node.module]
-            if any(n.split(".")[0] in {"subprocess", "os"} and "exec" in n for n in names):
-                offenders.append(f"{path.name}: {names}")
-            if any(n == "subprocess" for n in names):
-                offenders.append(f"{path.name}: imports subprocess")
-    assert not offenders, (
-        "a module now spawns processes; credential transport must be handled "
-        f"explicitly before this is allowed: {offenders}"
-    )
+            if (
+                isinstance(node, ast.Import) and any(a.name == "subprocess" for a in node.names)
+            ) or (isinstance(node, ast.ImportFrom) and node.module == "subprocess"):
+                found[path.name] = tree
+    return found
+
+
+def test_only_the_client_modules_spawn_processes() -> None:
+    users = _subprocess_users()
+    assert users, "no module imports subprocess -- this guard is vacuous"
+    assert set(users) <= SPAWNERS, f"unexpected process spawners: {set(users) - SPAWNERS}"
+
+
+def test_every_process_gets_an_explicit_environment() -> None:
+    missing = []
+    for name, tree in _subprocess_users().items():
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"Popen", "run", "call", "check_call", "check_output"}
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "subprocess"
+                and not any(k.arg == "env" for k in node.keywords)
+            ):
+                missing.append(f"{name}:{node.lineno}")
+    assert missing == []
 
 
 def test_password_is_absent_from_every_repr() -> None:

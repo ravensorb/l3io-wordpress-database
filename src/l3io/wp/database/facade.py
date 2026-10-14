@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from . import inspection, provision
+import os
+from collections.abc import Iterable, Sequence
+from typing import IO
+
+from . import inspection, provision, transfer
 from .connection import Connection
 from .credentials import CredentialSource
 from .inspection import Survey
 from .provision import EnsureResult, OperationResult
 from .state import ConnectionState
+from .transfer import DumpStream, TransferResult
 from .verdict import Verdict
 from .versions import SchemaVersion
 
@@ -119,6 +124,72 @@ class Database:
 
     def drop_database(self, admin: CredentialSource, *, confirm: str) -> OperationResult:
         return provision.drop_database(self._connection, admin, confirm=confirm)
+
+    def check_dump(self, credentials: CredentialSource, *, options: Sequence[str] = ()) -> Verdict:
+        return transfer.check_dump(self._connection, credentials, options=options)
+
+    def iter_dump(
+        self,
+        credentials: CredentialSource,
+        *,
+        recipients: Sequence[str] | None = None,
+        options: Sequence[str] = (),
+    ) -> DumpStream:
+        return transfer.iter_dump(
+            self._connection, credentials, recipients=recipients, options=options
+        )
+
+    def dump(
+        self,
+        credentials: CredentialSource,
+        to: IO[bytes] | str | os.PathLike[str],
+        *,
+        recipients: Sequence[str] | None = None,
+        options: Sequence[str] = (),
+    ) -> TransferResult:
+        return transfer.dump(
+            self._connection, credentials, to, recipients=recipients, options=options
+        )
+
+    def check_load(
+        self,
+        credentials: CredentialSource,
+        *,
+        source: str | os.PathLike[str] | None = None,
+        replace: str | None = None,
+        identities: Sequence[str] | None = None,
+        options: Sequence[str] = (),
+        allow_unsandboxed: bool = False,
+    ) -> Verdict:
+        return transfer.check_load(
+            self._connection,
+            credentials,
+            source=source,
+            replace=replace,
+            identities=identities,
+            options=options,
+            allow_unsandboxed=allow_unsandboxed,
+        )
+
+    def load(
+        self,
+        credentials: CredentialSource,
+        source: IO[bytes] | Iterable[bytes] | str | os.PathLike[str],
+        *,
+        replace: str | None = None,
+        identities: Sequence[str] | None = None,
+        options: Sequence[str] = (),
+        allow_unsandboxed: bool = False,
+    ) -> TransferResult:
+        return transfer.load(
+            self._connection,
+            credentials,
+            source,
+            replace=replace,
+            identities=identities,
+            options=options,
+            allow_unsandboxed=allow_unsandboxed,
+        )
 
     def __repr__(self) -> str:
         return f"Database({self._connection!r})"

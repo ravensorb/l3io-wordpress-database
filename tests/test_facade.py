@@ -6,7 +6,7 @@ import inspect as pyinspect
 from collections.abc import Callable
 from typing import Any
 
-from l3io.wp.database import inspection, provision
+from l3io.wp.database import inspection, provision, transfer
 from l3io.wp.database.connection import Connection
 from l3io.wp.database.credentials import Explicit
 from l3io.wp.database.facade import Database
@@ -26,12 +26,20 @@ OPERATIONS = [
     "drop_user",
     "check_drop_database",
     "drop_database",
+    "check_dump",
+    "iter_dump",
+    "dump",
+    "check_load",
+    "load",
 ]
 
 
 def _free(name: str) -> Callable[..., Any]:
-    found: Callable[..., Any] = getattr(inspection, name, None) or getattr(provision, name)
-    return found
+    for module in (inspection, provision, transfer):
+        found = getattr(module, name, None)
+        if found is not None:
+            return found  # type: ignore[no-any-return]
+    raise AssertionError(name)
 
 
 def test_every_operation_is_bound_with_the_same_parameters() -> None:

@@ -26,6 +26,24 @@ def test_every_exported_name_exists() -> None:
         assert hasattr(pkg, name), name
 
 
+def test_transfer_surface_is_exported() -> None:
+    names = {
+        "TransferResult",
+        "DumpStream",
+        "check_dump",
+        "iter_dump",
+        "dump",
+        "check_load",
+        "load",
+        "TransferError",
+        "DecryptionError",
+        "CorruptDumpError",
+        "ClientTool",
+        "generate_identity",
+    }
+    assert names <= set(pkg.__all__), names - set(pkg.__all__)
+
+
 def test_old_names_are_gone() -> None:
     for name in (
         "WpDatabase",

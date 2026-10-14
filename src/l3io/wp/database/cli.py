@@ -48,6 +48,7 @@ from .provision import (
     revoke,
     rotate_password,
 )
+from .transfer import check_dump, check_load, dump, load
 from .verdict import Code, Verdict
 
 
@@ -63,11 +64,12 @@ class Exit(IntEnum):
     NOT_READY = 7
 
 
-_NEEDS_WP = {"inspect", "schema-version", "ensure", "rotate-password"}
+_NEEDS_WP = {"inspect", "schema-version", "ensure", "rotate-password", "dump", "load"}
 _NEEDS_ADMIN = {"survey", "ensure", "rotate-password", "revoke", "drop-user", "drop-database"}
 _NAMED_USER = {"revoke", "drop-user"}
 _CONFIRM = {"revoke", "drop-user", "drop-database"}
-_CHECKABLE = ["ensure", "rotate-password", "revoke", "drop-user", "drop-database"]
+_CHECKABLE = ["ensure", "rotate-password", "revoke", "drop-user", "drop-database", "dump", "load"]
+_TRANSFER = {"dump", "load"}
 
 
 def _add_operation_options(p: argparse.ArgumentParser, operation: str) -> None:
@@ -100,6 +102,46 @@ def _add_operation_options(p: argparse.ArgumentParser, operation: str) -> None:
     if operation in {"survey", "schema-version"}:
         p.add_argument(
             "--table-prefix", help="WordPress $table_prefix (default: from wp-config, else wp_)"
+        )
+    if operation == "dump":
+        p.add_argument("--output", required=True, help="file to write, or - for stdout")
+        p.add_argument(
+            "--recipient",
+            action="append",
+            default=[],
+            help="age or SSH public key (repeatable)",
+        )
+        p.add_argument(
+            "--option",
+            action="append",
+            default=[],
+            help="extra dump option (allow-listed, repeatable); join it with '=': "
+            "--option=--ignore-table=wp_site.wp_logs",
+        )
+    if operation == "load":
+        p.add_argument("--input", required=True, help="dump file to read, or - for stdin")
+        p.add_argument(
+            "--identity", action="append", default=[], help="age identity file (repeatable)"
+        )
+        p.add_argument(
+            "--identity-passphrase-env",
+            metavar="VAR",
+            help="variable holding the identity files' passphrase",
+        )
+        p.add_argument(
+            "--replace", metavar="NAME", help="repeat the target's name to load over its tables"
+        )
+        p.add_argument(
+            "--allow-unsandboxed",
+            action="store_true",
+            help="strip MariaDB's sandbox line for an older client",
+        )
+        p.add_argument(
+            "--option",
+            action="append",
+            default=[],
+            help="extra client option (allow-listed, repeatable); join it with '=': "
+            "--option=--binary-mode",
         )
 
 
@@ -222,8 +264,19 @@ def _jsonable(obj: Any) -> Any:
     return obj
 
 
-def _emit(value: Any) -> None:
-    print(json.dumps(_jsonable(value), indent=2))
+def _identities(args: argparse.Namespace) -> list[str]:
+    from .encryption import read_identity
+
+    passphrase = (
+        _password(args.identity_passphrase_env, "the identity files")
+        if args.identity_passphrase_env
+        else None
+    )
+    return [read_identity(path, passphrase) for path in args.identity]
+
+
+def _emit(value: Any, stream: Any = None) -> None:
+    print(json.dumps(_jsonable(value), indent=2), file=stream or sys.stdout)
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -232,7 +285,8 @@ def _run(args: argparse.Namespace) -> int:
     prefix = getattr(args, "table_prefix", None) or (config.table_prefix if config else "wp_")
 
     if args.operation == "check":
-        admin = _admin(args)
+        # Never resolved for a transfer: only the provisioning checks use the admin account.
+        admin = Explicit("", "") if operation in _TRANSFER else _admin(args)
         checks: dict[str, Any] = {
             "ensure": lambda: check_ensure(
                 connection, admin, _wordpress(args, config), user_host=args.user_host
@@ -247,6 +301,16 @@ def _run(args: argparse.Namespace) -> int:
                 connection, admin, args.user, user_host=args.user_host, confirm=args.confirm
             ),
             "drop-database": lambda: check_drop_database(connection, admin, confirm=args.confirm),
+            "dump": lambda: check_dump(connection, _wordpress(args, config), options=args.option),
+            "load": lambda: check_load(
+                connection,
+                _wordpress(args, config),
+                source=None if args.input == "-" else args.input,
+                replace=args.replace,
+                identities=_identities(args) or None,
+                options=args.option,
+                allow_unsandboxed=args.allow_unsandboxed,
+            ),
         }
         verdict = checks[operation]()
         _emit(verdict)
@@ -297,6 +361,32 @@ def _run(args: argparse.Namespace) -> int:
         _emit(
             drop_user(
                 connection, _admin(args), args.user, user_host=args.user_host, confirm=args.confirm
+            )
+        )
+        return Exit.OK
+    if operation == "dump":
+        target = sys.stdout.buffer if args.output == "-" else args.output
+        result = dump(
+            connection,
+            _wordpress(args, config),
+            target,
+            recipients=args.recipient or None,
+            options=args.option,
+        )
+        # With the dump on stdout, the result must not be mixed into it.
+        _emit(result, stream=sys.stderr if args.output == "-" else sys.stdout)
+        return Exit.OK
+    if operation == "load":
+        source = sys.stdin.buffer if args.input == "-" else args.input
+        _emit(
+            load(
+                connection,
+                _wordpress(args, config),
+                source,
+                replace=args.replace,
+                identities=_identities(args) or None,
+                options=args.option,
+                allow_unsandboxed=args.allow_unsandboxed,
             )
         )
         return Exit.OK

@@ -494,7 +494,8 @@ def _header(plain_head: bytes | None, *, encrypted: bool) -> _Header:
 class _IterReader(io.RawIOBase):
     def __init__(self, chunks: Iterable[bytes]) -> None:
         self._chunks: Iterator[bytes] = iter(chunks)
-        self._pending = b""
+        # A view, so taking a piece of a large chunk never copies the rest of it.
+        self._pending = memoryview(b"")
 
     def readable(self) -> bool:
         return True
@@ -502,7 +503,7 @@ class _IterReader(io.RawIOBase):
     def readinto(self, buffer: Any) -> int:
         while not self._pending:
             try:
-                self._pending = next(self._chunks)
+                self._pending = memoryview(next(self._chunks))
             except StopIteration:
                 return 0
         size = min(len(buffer), len(self._pending))
@@ -570,6 +571,28 @@ def _io_failed(exc: OSError, verdict: Verdict) -> TransferError:
     return TransferError(f"load failed: {exc.strerror or exc}", verdict, None, "")
 
 
+def _feed(stdin: IO[bytes], head: bytes, reader: IO[bytes], decrypt: _Decrypting | None) -> int:
+    """Write ``head`` then ``reader`` to ``stdin`` and close it; return the bytes written."""
+    delivered = 0
+    for block in itertools.chain((head,), iter(lambda: reader.read(CHUNK), b"")):
+        if not block:
+            continue
+        try:
+            stdin.write(block)
+        except BrokenPipeError:
+            break  # the program exited; its exit code says why
+        delivered += len(block)
+    if decrypt is not None:
+        # After an early exit the decrypting thread is blocked writing plaintext
+        # nobody reads; closing its reader is what lets it finish.
+        decrypt.close()
+        if decrypt.error is not None:
+            raise decrypt.error
+    with suppress(BrokenPipeError):
+        stdin.close()
+    return delivered
+
+
 def _pump_load(
     process: subprocess.Popen[bytes],
     head: bytes,
@@ -586,37 +609,17 @@ def _pump_load(
     if verdict is None:
         verdict = Verdict("load")
     stderr = _Stderr(process.stderr)
-    delivered = 0
+    # Every failure to feed and close stdin cleanly kills the program: otherwise its
+    # input would be closed later, on collection or exit, running a partial statement.
     try:
-        for block in itertools.chain((head,), iter(lambda: reader.read(CHUNK), b"")):
-            if not block:
-                continue
-            try:
-                process.stdin.write(block)
-            except BrokenPipeError:
-                break  # the program exited; its exit code says why
-            delivered += len(block)
-    except OSError as exc:  # reading the source, or writing to the program
+        delivered = _feed(process.stdin, head, reader, decrypt)
+    except BaseException as exc:
         _abandon(process)
         if decrypt is not None:
             decrypt.close()
-        raise _io_failed(exc, verdict) from exc
-    if decrypt is not None:
-        # After an early exit the decrypting thread is blocked writing plaintext
-        # nobody reads; closing its reader is what lets it finish.
-        decrypt.close()
-        if decrypt.error is not None:
-            _abandon(process)
-            if isinstance(decrypt.error, OSError):
-                raise _io_failed(decrypt.error, verdict) from decrypt.error
-            raise decrypt.error
-    try:
-        process.stdin.close()
-    except BrokenPipeError:
-        pass
-    except OSError as exc:
-        _abandon(process)
-        raise _io_failed(exc, verdict) from exc
+        if isinstance(exc, OSError):  # reading the source, or writing to the program
+            raise _io_failed(exc, verdict) from exc
+        raise
     code = process.wait()
     text = stderr.text(password)
     if code != 0:

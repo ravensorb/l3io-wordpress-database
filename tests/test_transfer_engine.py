@@ -18,8 +18,9 @@ import sys
 import threading
 import time
 from collections.abc import Iterable, Mapping
+from contextlib import ExitStack
 from pathlib import Path
-from typing import Any
+from typing import IO, Any, cast
 
 import pytest
 from structlog.testing import capture_logs
@@ -28,6 +29,7 @@ from l3io.wp.database import _client, transfer
 from l3io.wp.database.connection import Connection
 from l3io.wp.database.credentials import Explicit, ResolvedCredentials
 from l3io.wp.database.errors import (
+    DecryptionError,
     InvalidArgumentsError,
     MissingDependencyError,
     RefusedError,
@@ -484,9 +486,11 @@ def test_iterable_and_stream_sources_are_read_alike() -> None:
     assert reader.read(3) + reader.read(10) == b"abcd"
 
 
-def _load_planned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> Verdict:
+def _load_planned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str, **tool_changes: Any
+) -> Verdict:
     """A fake load client, planned as ready; returns the plan's verdict."""
-    tool = fake(tmp_path, monkeypatch, "mysql", body)
+    tool = dataclasses.replace(fake(tmp_path, monkeypatch, "mysql", body), **tool_changes)
     verdict = Verdict("load", (Finding(Code.CROSS_FAMILY_DUMP, "planned"),))
     monkeypatch.setattr(
         transfer,
@@ -585,3 +589,109 @@ def test_a_source_failing_mid_stream_is_a_transfer_error_and_reaps_the_client(
     assert info.value.exit_code is None
     [process] = started
     assert process.returncode == -signal.SIGKILL
+
+
+def test_an_iterable_source_failing_mid_stream_kills_the_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _load_planned(tmp_path, monkeypatch, "cat > /dev/null\n")
+    started = _recording_start(monkeypatch)
+
+    def chunks() -> Iterable[bytes]:
+        yield b"x" * 100_000
+        yield b"y" * 100_000
+        msg = "the upstream connection dropped"
+        raise RuntimeError(msg)
+
+    with pytest.raises(RuntimeError, match="upstream connection dropped"):
+        transfer.load(CONN, Explicit("wpuser", SECRET), chunks())
+    [process] = started
+    assert process.returncode == -signal.SIGKILL
+
+
+def test_one_large_chunk_is_read_in_linear_time() -> None:
+    size = 64 * 1024 * 1024
+    reader = transfer._as_reader([b"x" * size])
+    began = time.monotonic()
+    total = sum(len(block) for block in iter(lambda: reader.read(transfer.CHUNK), b""))
+    assert total == size
+    assert time.monotonic() - began < 5
+
+
+def test_a_wrong_identity_loads_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("pyrage")
+    from l3io.wp.database import encryption
+
+    monkeypatch.setattr(transfer, "_load_plan", lambda *_, **__: pytest.fail("planned a load"))
+    monkeypatch.setattr(transfer, "_start", lambda *_, **__: pytest.fail("started a load"))
+    sealed, _ = _sealed(1000)
+    other, _ = encryption.generate_identity()
+    with pytest.raises(DecryptionError):
+        transfer.load(CONN, Explicit("wpuser", SECRET), io.BytesIO(sealed), identities=[other])
+
+
+SANDBOXED = (
+    b"/*M!999999\\- enable the sandbox mode */\n-- MariaDB dump 10.19-11.4.13-MariaDB\nSELECT 1;\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("tool_changes", "expected"),
+    [
+        (
+            {"family": ServerFamily.MARIADB, "version": (10, 2, 44)},
+            SANDBOXED.split(b"\n", 1)[1],
+        ),
+        ({}, SANDBOXED),
+    ],
+    ids=["old-mariadb-client-strips", "mysql-client-keeps"],
+)
+def test_load_strips_the_sandbox_line_only_for_a_client_that_cannot_read_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool_changes: dict[str, Any],
+    expected: bytes,
+) -> None:
+    received = tmp_path / "received"
+    _load_planned(tmp_path, monkeypatch, f"cat > {received}\n", **tool_changes)
+    result = transfer.load(CONN, Explicit("wpuser", SECRET), io.BytesIO(SANDBOXED))
+    assert received.read_bytes() == expected
+    assert result.bytes == len(expected)
+
+
+def test_loading_an_empty_source_succeeds_with_nothing_delivered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _load_planned(tmp_path, monkeypatch, "cat > /dev/null\n")
+    result = transfer.load(CONN, Explicit("wpuser", SECRET), io.BytesIO(b""))
+    assert result.bytes == 0
+
+
+class _Trickle(io.RawIOBase):
+    """An unbuffered stream that returns at most three bytes per read."""
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:
+        block, self._data = self._data[:3], self._data[3:]
+        return block
+
+
+def _trickle(data: bytes) -> IO[bytes]:
+    return cast("IO[bytes]", _Trickle(data))
+
+
+def test_the_header_is_detected_through_short_reads() -> None:
+    from l3io.wp.database import encryption
+
+    with ExitStack() as cleanup:
+        age, *_ = transfer._prepare(_trickle(encryption.AGE_HEADER + b"\n-> X25519"), None, cleanup)
+        sandbox, *_ = transfer._prepare(_trickle(SANDBOXED), None, cleanup)
+    assert age.encrypted
+    assert age.needs_identity
+    assert sandbox.sandboxed
+    assert sandbox.family is ServerFamily.MARIADB

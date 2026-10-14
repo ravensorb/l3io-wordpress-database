@@ -10,13 +10,15 @@ MariaDB's sandbox line; it never parses SQL (global rule 1).
 
 from __future__ import annotations
 
+import io
+import itertools
 import os
 import subprocess
 import threading
 import time
 import uuid
-from collections.abc import Sequence
-from contextlib import ExitStack
+from collections.abc import Iterable, Iterator, Sequence
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
@@ -29,8 +31,8 @@ from ._observe import VERDICT_KEY, operation
 from .connection import Connection
 from .credentials import CredentialSource, ResolvedCredentials
 from .errors import DatabaseUnreachableError, InvalidArgumentsError, RefusedError, TransferError
-from .provision import _as_package_error, _preflight_resolved, _resolve_or_finding
-from .server import ServerInfo, detect_server
+from .provision import _as_package_error, _confirmation, _preflight_resolved, _resolve_or_finding
+from .server import ServerFamily, ServerInfo, detect_server
 from .verdict import Code, Finding, Verdict
 
 CHUNK = 64 * 1024
@@ -455,3 +457,394 @@ def dump(
         msg = "dump finished without a result"
         raise TransferError(msg, Verdict("dump"), None, "")
     return stream.result
+
+
+SANDBOX_LINE = b"/*M!999999\\- enable the sandbox mode */"
+
+
+@dataclass(frozen=True, slots=True)
+class _Header:
+    """What the first lines of a source say, compared against fixed strings only."""
+
+    encrypted: bool
+    family: ServerFamily | None
+    sandboxed: bool
+    #: Encrypted, and no identity was supplied, so the plaintext is unknown.
+    needs_identity: bool = False
+
+
+def _header(plain_head: bytes | None, *, encrypted: bool) -> _Header:
+    if not plain_head:
+        return _Header(encrypted, None, False)
+    lines = plain_head.split(b"\n", 3)[:3]
+    sandboxed = lines[0].startswith(SANDBOX_LINE)
+    family: ServerFamily | None = None
+    for line in lines:
+        if line.startswith(b"-- MariaDB dump") or (
+            line.startswith(b"-- MySQL dump") and b"MariaDB" in line
+        ):
+            family = ServerFamily.MARIADB
+            break
+        if line.startswith(b"-- MySQL dump"):
+            family = ServerFamily.MYSQL
+            break
+    return _Header(encrypted, family, sandboxed)
+
+
+class _IterReader(io.RawIOBase):
+    def __init__(self, chunks: Iterable[bytes]) -> None:
+        self._chunks: Iterator[bytes] = iter(chunks)
+        self._pending = b""
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        while not self._pending:
+            try:
+                self._pending = next(self._chunks)
+            except StopIteration:
+                return 0
+        size = min(len(buffer), len(self._pending))
+        buffer[:size] = self._pending[:size]
+        self._pending = self._pending[size:]
+        return size
+
+
+def _as_reader(chunks: Iterable[bytes]) -> IO[bytes]:
+    return io.BufferedReader(_IterReader(chunks))
+
+
+def _prefixed(head: bytes, rest: IO[bytes]) -> IO[bytes]:
+    def chunks() -> Iterator[bytes]:
+        yield head
+        yield from iter(lambda: rest.read(CHUNK), b"")
+
+    return _as_reader(chunks())
+
+
+class _Decrypting:
+    """Decrypts ``source`` into a pipe on a thread; ``reader`` is the plaintext end."""
+
+    def __init__(self, source: IO[bytes], identities: Sequence[str]) -> None:
+        from . import encryption
+
+        read_fd, write_fd = os.pipe()
+        self.reader: IO[bytes] = os.fdopen(read_fd, "rb")
+        self.error: BaseException | None = None
+        writer = os.fdopen(write_fd, "wb")
+
+        def run() -> None:
+            try:
+                encryption.decrypt(source, writer, identities)
+            except BrokenPipeError:
+                pass  # the consumer stopped reading
+            except BaseException as exc:  # noqa: BLE001 - re-raised on the consumer's thread
+                self.error = exc
+            finally:
+                with suppress(BrokenPipeError):  # flushing to a consumer that stopped reading
+                    writer.close()
+
+        self._thread = threading.Thread(target=run, daemon=True)
+        self._thread.start()
+
+    def join(self) -> None:
+        self._thread.join()
+
+    def close(self) -> None:
+        """Stop reading; a thread blocked writing plaintext then fails with EPIPE and exits."""
+        self.reader.close()
+        self._thread.join(timeout=10)
+
+
+def _abandon(process: subprocess.Popen[bytes]) -> None:
+    """Kill and reap a load program: closing its input instead would run a partial statement."""
+    process.kill()
+    process.wait()
+    if process.stdin is not None:
+        with suppress(OSError):
+            process.stdin.close()
+
+
+def _io_failed(exc: OSError, verdict: Verdict) -> TransferError:
+    return TransferError(f"load failed: {exc.strerror or exc}", verdict, None, "")
+
+
+def _pump_load(
+    process: subprocess.Popen[bytes],
+    head: bytes,
+    reader: IO[bytes],
+    *,
+    decrypt: _Decrypting | None = None,
+    password: str,
+    verdict: Verdict | None = None,
+) -> int:
+    """Feed ``head`` then ``reader`` to the program's stdin; return the bytes delivered."""
+    if process.stdin is None or process.stderr is None:
+        msg = "a load process needs piped stdin and stderr"
+        raise ValueError(msg)
+    if verdict is None:
+        verdict = Verdict("load")
+    stderr = _Stderr(process.stderr)
+    delivered = 0
+    try:
+        for block in itertools.chain((head,), iter(lambda: reader.read(CHUNK), b"")):
+            if not block:
+                continue
+            try:
+                process.stdin.write(block)
+            except BrokenPipeError:
+                break  # the program exited; its exit code says why
+            delivered += len(block)
+    except OSError as exc:  # reading the source, or writing to the program
+        _abandon(process)
+        if decrypt is not None:
+            decrypt.close()
+        raise _io_failed(exc, verdict) from exc
+    if decrypt is not None:
+        # After an early exit the decrypting thread is blocked writing plaintext
+        # nobody reads; closing its reader is what lets it finish.
+        decrypt.close()
+        if decrypt.error is not None:
+            _abandon(process)
+            if isinstance(decrypt.error, OSError):
+                raise _io_failed(decrypt.error, verdict) from decrypt.error
+            raise decrypt.error
+    try:
+        process.stdin.close()
+    except BrokenPipeError:
+        pass
+    except OSError as exc:
+        _abandon(process)
+        raise _io_failed(exc, verdict) from exc
+    code = process.wait()
+    text = stderr.text(password)
+    if code != 0:
+        first = text.strip().splitlines()[0] if text.strip() else "no error output"
+        msg = f"load failed: exited {code}: {first}"
+        raise TransferError(msg, verdict, code, text)
+    return delivered
+
+
+def _open_source(
+    source: IO[bytes] | Iterable[bytes] | str | os.PathLike[str], cleanup: ExitStack
+) -> IO[bytes]:
+    if isinstance(source, (str, os.PathLike)):
+        try:
+            file = open(source, "rb")  # noqa: PTH123, SIM115 - closed by cleanup
+        except OSError as exc:
+            msg = f"cannot read the dump source {os.fspath(source)!r}: {exc.strerror or exc}"
+            raise InvalidArgumentsError(msg) from exc
+        return cleanup.enter_context(file)
+    if hasattr(source, "read"):
+        return source  # type: ignore[return-value]
+    return _as_reader(source)
+
+
+def _read_head(reader: IO[bytes]) -> bytes:
+    """Up to CHUNK bytes; an unbuffered stream may return less per read."""
+    head = b""
+    while len(head) < CHUNK:
+        block = reader.read(CHUNK - len(head))
+        if not block:
+            break
+        head += block
+    return head
+
+
+def _prepare(
+    reader: IO[bytes], identities: Sequence[str] | None, cleanup: ExitStack
+) -> tuple[_Header, bytes, IO[bytes], _Decrypting | None]:
+    """Peek the source: (header, plaintext head, plaintext reader, decryptor)."""
+    from . import encryption
+
+    try:
+        head = _read_head(reader)
+    except OSError as exc:
+        msg = f"cannot read the dump source: {exc.strerror or exc}"
+        raise InvalidArgumentsError(msg) from exc
+    if not head.startswith(encryption.AGE_HEADER):
+        return _header(head, encrypted=False), head, reader, None
+    if not identities:
+        return _Header(True, None, False, needs_identity=True), b"", reader, None
+    decrypting = _Decrypting(_prefixed(head, reader), identities)
+    cleanup.callback(decrypting.close)
+    plain_head = decrypting.reader.read(CHUNK)
+    if not plain_head:
+        decrypting.join()
+        error = decrypting.error
+        if isinstance(error, OSError):
+            msg = f"cannot read the dump source: {error.strerror or error}"
+            raise InvalidArgumentsError(msg) from error
+        if error is not None:
+            raise error  # wrong identity or damage, before anything is loaded
+    return _header(plain_head, encrypted=True), plain_head, decrypting.reader, decrypting
+
+
+def _load_plan(
+    connection: Connection,
+    credentials: CredentialSource,
+    options: Sequence[str],
+    *,
+    replace: str | None,
+    header: _Header | None,
+    allow_unsandboxed: bool,
+) -> _Plan:
+    findings = _platform_and_option_findings(options, _client.LOAD_OPTIONS)
+    if header is not None and header.needs_identity:
+        findings.append(
+            Finding(Code.IDENTITY_REQUIRED, "the source is age-encrypted; supply identities=")
+        )
+    resolved = _resolve_or_finding(credentials)
+    if isinstance(resolved, Finding):
+        return _Plan(Verdict("load", (*findings, resolved)), None, None, None)
+    verdict, session = _preflight_resolved(connection, resolved, "load", LOAD_PRIVILEGES)
+    verdict = verdict.with_findings(*findings)
+    if session is None:
+        return _Plan(verdict, resolved, None, None)
+    database = connection.database
+    try:
+        with session, session.cursor() as cur:
+            server = detect_server(cur)
+            cur.execute(
+                "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = %s",
+                (database,),
+            )
+            exists = int(cur.fetchone()[0]) > 0
+            tables = 0
+            if exists:
+                cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = %s",
+                    (database,),
+                )
+                tables = int(cur.fetchone()[0])
+    except pymysql.err.MySQLError as exc:
+        raise _as_package_error(exc, DatabaseUnreachableError) from exc
+    extra: list[Finding] = []
+    if not exists:
+        extra.append(Finding(Code.DATABASE_ABSENT, f"{database!r} does not exist"))
+    elif replace is not None:
+        extra += _confirmation(database, replace)
+    elif tables:
+        extra.append(
+            Finding(
+                Code.DATABASE_NOT_EMPTY,
+                f"{database!r} holds {tables} table(s); "
+                f"pass replace={database!r} to load over them",
+                {"tables": tables},
+            )
+        )
+    tool, tool_findings = _tool_findings(_client.PURPOSE_LOAD, server)
+    extra += tool_findings
+    if header is not None and tool is not None:
+        if header.family is not None and header.family is not server.family:
+            extra.append(
+                Finding(
+                    Code.CROSS_FAMILY_DUMP,
+                    f"the dump comes from {header.family}; its collations may not exist on "
+                    f"{server.family} {server.version_text}",
+                )
+            )
+        if header.sandboxed and not tool.understands_sandbox_line and not allow_unsandboxed:
+            extra.append(
+                Finding(
+                    Code.INCOMPATIBLE_DUMP_SOURCE,
+                    f"the dump begins with MariaDB's sandbox line, which {tool.label} cannot "
+                    "read; pass allow_unsandboxed=True to strip that one line",
+                )
+            )
+    return _Plan(verdict.with_findings(*extra), resolved, tool, server)
+
+
+def check_load(
+    connection: Connection,
+    credentials: CredentialSource,
+    *,
+    source: str | os.PathLike[str] | None = None,
+    replace: str | None = None,
+    identities: Sequence[str] | None = None,
+    options: Sequence[str] = (),
+    allow_unsandboxed: bool = False,
+) -> Verdict:
+    """What :func:`load` would find. The source header is read only for a path."""
+    with operation("check_load", connection) as fields, ExitStack() as cleanup:
+        header = None
+        if source is not None:
+            header, *_ = _prepare(_open_source(source, cleanup), identities, cleanup)
+        verdict = _load_plan(
+            connection,
+            credentials,
+            options,
+            replace=replace,
+            header=header,
+            allow_unsandboxed=allow_unsandboxed,
+        ).verdict
+        fields[VERDICT_KEY] = verdict
+        return verdict
+
+
+def load(
+    connection: Connection,
+    credentials: CredentialSource,
+    source: IO[bytes] | Iterable[bytes] | str | os.PathLike[str],
+    *,
+    replace: str | None = None,
+    identities: Sequence[str] | None = None,
+    options: Sequence[str] = (),
+    allow_unsandboxed: bool = False,
+) -> TransferResult:
+    """Load a dump into this database.
+
+    Damage in a source is found mid-stream, after earlier statements ran, so load
+    into a staging database and switch to it only after the load is checked.
+    """
+    started = time.monotonic()
+    with operation("load", connection) as fields, ExitStack() as cleanup:
+        header, head, reader, decrypting = _prepare(
+            _open_source(source, cleanup), identities, cleanup
+        )
+        plan = _load_plan(
+            connection,
+            credentials,
+            options,
+            replace=replace,
+            header=header,
+            allow_unsandboxed=allow_unsandboxed,
+        )
+        fields[VERDICT_KEY] = plan.verdict
+        if (
+            not plan.verdict.ok
+            or plan.tool is None
+            or plan.server is None
+            or plan.credentials is None
+        ):
+            raise RefusedError(plan.verdict)
+        if header.sandboxed and not plan.tool.understands_sandbox_line:
+            head = head.split(b"\n", 1)[1] if b"\n" in head else b""
+        try:
+            process = _start(
+                plan.tool,
+                _client.load_args(connection.database, options),
+                plan.credentials,
+                connection,
+                for_load=True,
+            )
+        except OSError as exc:
+            msg = f"could not start {plan.tool.path}: {exc.strerror or exc}"
+            raise TransferError(msg, plan.verdict, None, "") from exc
+        delivered = _pump_load(
+            process,
+            head,
+            reader,
+            decrypt=decrypting,
+            password=plan.credentials.password,
+            verdict=plan.verdict,
+        )
+        fields["bytes"] = delivered
+        return TransferResult(
+            delivered,
+            round((time.monotonic() - started) * 1000, 1),
+            plan.tool.label,
+            plan.server,
+            plan.verdict,
+        )

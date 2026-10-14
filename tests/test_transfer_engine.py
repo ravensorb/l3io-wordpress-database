@@ -15,6 +15,7 @@ import resource
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -32,7 +33,7 @@ from l3io.wp.database.errors import (
     RefusedError,
     TransferError,
 )
-from l3io.wp.database.server import parse_version
+from l3io.wp.database.server import ServerFamily, parse_version
 from l3io.wp.database.verdict import Code, Finding, Verdict
 
 CONN = Connection(host="127.0.0.1", database="wp_site", port=3306)
@@ -380,3 +381,207 @@ def test_a_missing_encryption_extra_is_named_before_the_tool_starts(
     assert info.value.extra == "encryption"
     time.sleep(0.2)
     assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("head", "family", "sandboxed"),
+    [
+        (
+            b"-- MySQL dump 10.13  Distrib 8.4.11, for Linux (x86_64)\n--\n",
+            ServerFamily.MYSQL,
+            False,
+        ),
+        (
+            b"-- MySQL dump 10.19  Distrib 10.2.44-MariaDB, for debian\n",
+            ServerFamily.MARIADB,
+            False,
+        ),
+        (
+            b"/*M!999999\\- enable the sandbox mode */ \n-- MariaDB dump 10.19-11.4.13-MariaDB\n",
+            ServerFamily.MARIADB,
+            True,
+        ),
+        (b"CREATE TABLE t (x INT);\n", None, False),
+        (b"", None, False),
+    ],
+)
+def test_header_detection(head: bytes, family: ServerFamily | None, sandboxed: bool) -> None:
+    header = transfer._header(head, encrypted=False)
+    assert (header.family, header.sandboxed) == (family, sandboxed)
+
+
+def loader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> subprocess.Popen[bytes]:
+    tool = fake(tmp_path, monkeypatch, "mysql", body)
+    return transfer._start(tool, ["--database=wp_site"], CREDS, CONN, for_load=True)
+
+
+def test_load_feeds_everything_to_the_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    received = tmp_path / "received"
+    process = loader(tmp_path, monkeypatch, f"cat > {received}\n")
+    count = transfer._pump_load(
+        process, b"SELECT 1;\n", io.BytesIO(b"SELECT 2;\n"), password=SECRET
+    )
+    assert count == 20
+    assert received.read_bytes() == b"SELECT 1;\nSELECT 2;\n"
+
+
+def test_empty_source_loads_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    process = loader(tmp_path, monkeypatch, "cat > /dev/null\n")
+    assert transfer._pump_load(process, b"", io.BytesIO(b""), password=SECRET) == 0
+
+
+def test_a_failing_client_raises_transfer_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = loader(
+        tmp_path,
+        monkeypatch,
+        'cat > /dev/null; echo "ERROR 1273 at line 26: Unknown collation" >&2; exit 1\n',
+    )
+    with pytest.raises(TransferError) as info:
+        transfer._pump_load(process, b"SELECT 1;\n", io.BytesIO(b""), password=SECRET)
+    assert info.value.exit_code == 1
+    assert "Unknown collation" in info.value.stderr
+
+
+def test_a_client_that_dies_early_does_not_hang(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = loader(tmp_path, monkeypatch, "exit 4\n")
+    big = io.BytesIO(b"x" * 10_000_000)
+    with pytest.raises(TransferError) as info:
+        transfer._pump_load(process, b"", big, password=SECRET)
+    assert info.value.exit_code == 4
+
+
+class _CountingReader(io.BytesIO):
+    """Records how much of the source the engine pulled."""
+
+    def __init__(self, data: bytes) -> None:
+        super().__init__(data)
+        self.pulled = 0
+
+    def read(self, size: int | None = -1) -> bytes:
+        block = super().read(size)
+        self.pulled += len(block)
+        return block
+
+
+def test_load_streams_instead_of_reading_the_source_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    process = loader(tmp_path, monkeypatch, "head -c 1 > /dev/null; exit 4\n")
+    source = _CountingReader(b"x" * 50_000_000)
+    with pytest.raises(TransferError):
+        transfer._pump_load(process, b"", source, password=SECRET)
+    assert source.pulled < 5_000_000
+
+
+def test_iterable_and_stream_sources_are_read_alike() -> None:
+    reader = transfer._as_reader([b"ab", b"", b"cd"])
+    assert reader.read(3) + reader.read(10) == b"abcd"
+
+
+def _load_planned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> Verdict:
+    """A fake load client, planned as ready; returns the plan's verdict."""
+    tool = fake(tmp_path, monkeypatch, "mysql", body)
+    verdict = Verdict("load", (Finding(Code.CROSS_FAMILY_DUMP, "planned"),))
+    monkeypatch.setattr(
+        transfer,
+        "_load_plan",
+        lambda *_, **__: transfer._Plan(verdict, CREDS, tool, SERVER),
+    )
+    return verdict
+
+
+def _sealed(size: int) -> tuple[bytes, str]:
+    """``size`` bytes of plaintext, age-encrypted: (ciphertext, identity)."""
+    from l3io.wp.database import encryption
+
+    identity, recipient = encryption.generate_identity()
+    out = io.BytesIO()
+    encryption.encrypt(io.BytesIO(b"x" * size), out, [recipient])
+    return out.getvalue(), identity
+
+
+def test_an_encrypted_load_into_a_client_that_exits_early_does_not_hang(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("pyrage")
+    _load_planned(tmp_path, monkeypatch, "head -c 100 > /dev/null; exit 5\n")
+    sealed, identity = _sealed(8 * 1024 * 1024)
+    outcome: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            transfer.load(
+                CONN, Explicit("wpuser", SECRET), io.BytesIO(sealed), identities=[identity]
+            )
+        except BaseException as exc:  # noqa: BLE001 - inspected on the test's thread
+            outcome.append(exc)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=20)
+    assert not worker.is_alive(), "load hung after the client exited"
+    [error] = outcome
+    assert isinstance(error, TransferError)
+    assert error.exit_code == 5
+
+
+def test_an_unopenable_path_source_starts_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(transfer, "_load_plan", lambda *_, **__: pytest.fail("planned a load"))
+    monkeypatch.setattr(transfer, "_start", lambda *_, **__: pytest.fail("started a load"))
+    missing = tmp_path / "missing.sql"
+    with pytest.raises(InvalidArgumentsError) as info:
+        transfer.load(CONN, Explicit("wpuser", SECRET), missing)
+    assert str(missing) in str(info.value)
+    assert "No such file or directory" in str(info.value)
+    assert isinstance(info.value.__cause__, FileNotFoundError)
+
+
+class _FailingReader(io.RawIOBase):
+    """Serves ``data`` up to ``limit`` bytes, then fails like a dying disk."""
+
+    def __init__(self, data: bytes, limit: int) -> None:
+        self._data = data
+        self._limit = limit
+        self._pos = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        if self._pos >= self._limit:
+            raise OSError(errno.EIO, "Input/output error")
+        size = min(len(buffer), self._limit - self._pos, len(self._data) - self._pos)
+        buffer[:size] = self._data[self._pos : self._pos + size]
+        self._pos += size
+        return size
+
+
+@pytest.mark.parametrize("encrypted", [False, True])
+def test_a_source_failing_mid_stream_is_a_transfer_error_and_reaps_the_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, encrypted: bool
+) -> None:
+    verdict = _load_planned(tmp_path, monkeypatch, "cat > /dev/null\n")
+    started = _recording_start(monkeypatch)
+    identities = None
+    data = b"x" * 1_000_000
+    if encrypted:
+        pytest.importorskip("pyrage")
+        data, identity = _sealed(len(data))
+        identities = [identity]
+    source = io.BufferedReader(_FailingReader(data, 300_000))
+    with pytest.raises(TransferError) as info:
+        transfer.load(CONN, Explicit("wpuser", SECRET), source, identities=identities)
+    assert isinstance(info.value.__cause__, OSError)
+    assert info.value.__cause__.errno == errno.EIO
+    assert info.value.verdict == verdict
+    assert info.value.exit_code is None
+    [process] = started
+    assert process.returncode == -signal.SIGKILL

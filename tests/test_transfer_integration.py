@@ -120,7 +120,11 @@ def test_load_into_a_non_empty_database_needs_replace(names: tuple[str, str]) ->
     with pytest.raises(RefusedError) as info:
         load(site(source), ROOT, io.BytesIO(data.getvalue()), replace=target)
     assert Code.CONFIRMATION_MISMATCH in info.value.verdict.codes
+    before = checksum(source)
+    sql(f"INSERT INTO `{source}`.`wp_options` VALUES (99, 'stale', NULL, NULL)")  # noqa: S608
+    assert checksum(source) != before
     load(site(source), ROOT, io.BytesIO(data.getvalue()), replace=source)
+    assert checksum(source) == before
 
 
 def test_a_disallowed_option_is_refused(names: tuple[str, str]) -> None:

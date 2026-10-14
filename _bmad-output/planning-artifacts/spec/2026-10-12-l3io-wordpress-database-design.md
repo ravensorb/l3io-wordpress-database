@@ -76,14 +76,14 @@ name is exported from `l3io.wp.database`.
 | `credentials` | `CredentialSource` (protocol), `ResolvedCredentials`, `Explicit`, `Environment`, `WpConfigFile`, `AwsSecretsManager`, `CredentialChain` |
 | `connection` | `Connection` |
 | `verdict` | `Verdict`, `Finding`, `Code`, `Severity` |
-| `server` | `ServerInfo`, `ServerFamily`, `ClientTool` |
+| `server` | `ServerInfo`, `ServerFamily` |
 | `inspection` | `survey`, `Survey`, `inspect`, `ConnectionState`, `schema_version`, `SchemaVersion` |
 | `provision` | `ensure`, `EnsureResult`, `rotate_password`, `revoke`, `drop_user`, `drop_database`, `OperationResult`, and `check_` for each |
 | `transfer` | `dump`, `iter_dump`, `DumpStream`, `load`, `TransferResult`, `check_dump`, `check_load` |
 | `encryption` | used through `dump(recipients=)` and `load(identities=)`; `generate_identity` |
 | `identifiers` | `quote_identifier`, `quote_grant_database`, `validate_database_name`, `validate_user_name` |
 | `errors` | `DatabaseError` and its subclasses (section 10) |
-| (root) | `Database`, a facade binding one `Connection`; `__version__` |
+| (root) | `Database`, a facade binding one `Connection`; `ClientTool` (a transfer's client tool, defined in the internal `_client` module); `__version__` |
 
 No module shares a name with a function exported from the package root: an
 imported submodule rebinds that attribute, so the root export would be silently
@@ -281,9 +281,12 @@ Grants are always scoped to `database.*`, never global.
   contains; tables in the target that the dump does not contain remain.
 - **`check_dump(conn, credentials, *, options=())`** and
   **`check_load(conn, credentials, *, source=None, replace=None, identities=None, options=(), allow_unsandboxed=False)`**
-  return the `Verdict` the operation would act on. `check_load` evaluates the
-  source's header only when `source` is a path, because a stream or an iterable
-  cannot be read twice; `load` always evaluates it.
+  return the `Verdict` the operation would act on. `check_load` takes `source` only
+  as a path, or `None` to skip the header check; a stream or iterable is refused
+  with `InvalidArgumentsError`, because it cannot be read twice. `load` always
+  evaluates the header. A path source that `check_load` cannot open or decrypt
+  raises as `load` would (`InvalidArgumentsError`, `DecryptionError` or
+  `CorruptDumpError`) rather than returning a verdict.
 
 `dump` and `iter_dump` share one engine. `TransferResult` carries `bytes`,
 `duration_ms`, `tool` (name and version), `server` and the `Verdict`. `bytes` counts
@@ -316,13 +319,15 @@ tool; for a dump, the bytes produced, counted after encryption when there is any
    than its buffer into two, which would let a long value inject an option, so a
    connection value (user, password or host) whose escaped form exceeds 1024 UTF-8
    bytes, or that is not valid UTF-8, is refused with `InvalidArgumentsError` before
-   any program starts. No message names the value.
+   the client tool is started for the transfer. The check does not report it: the
+   refusal comes from the operation, after its check has connected and read the
+   tool's version. No message names the value.
 4. **The child's environment** is `PATH`, `LANG`, `LC_ALL` and
    `MYSQL_TEST_LOGIN_FILE`, and nothing else. No inherited `HOME`, `MYSQL_PWD`,
    `MYSQL_HOST` or `MYSQL_TCP_PORT` can authenticate or redirect it.
 5. **Dump defaults:** `--single-transaction --quick --hex-blob
-   --default-character-set=utf8mb4 --no-tablespaces`, plus `--set-gtid-purged=OFF` on
-   MySQL, and the database name as a positional argument (not `--databases`). The
+   --default-character-set=utf8mb4 --no-tablespaces`, plus `--set-gtid-purged=OFF` when
+   the tool is MySQL's `mysqldump`, and the database name as a positional argument (not `--databases`). The
    output therefore contains no `CREATE DATABASE` or `USE`, so it loads into a
    database of any name, which is what a staging restore needs. Callers may add
    options from an allow-list (for example `--routines`, `--events`,
@@ -336,15 +341,15 @@ tool; for a dump, the bytes produced, counted after encryption when there is any
    parsed. The `age` header without identities is `IDENTITY_REQUIRED`. A
    `-- MariaDB dump` or `-- MySQL dump` header naming the other family is
    `CROSS_FAMILY_DUMP`. MariaDB's sandbox line as the first line is
-   `INCOMPATIBLE_DUMP_SOURCE` when the client tool cannot read it (MySQL clients read it as a comment; MariaDB clients read it from
-   the release in each series that added it); `allow_unsandboxed=True` strips that
-   one line and nothing else.
+   `INCOMPATIBLE_DUMP_SOURCE` when the client tool cannot read it (MySQL clients
+   read it as a comment; MariaDB clients read it from the release in each series
+   that added it); `allow_unsandboxed=True` strips that one line and nothing else.
 7. **Damage is found mid-stream.** A corrupt or truncated source is discovered
    after the statements before the damage have run, so a caller loads into a
    staging database and switches to it only after the load succeeds, as backup
    does.
 8. **Order of failures.** Recipients are validated, and a missing `encryption`
-   extra is reported, before the dump program starts. A path source or target that
+   extra raises `MissingDependencyError`, before the dump tool is started. A path source or target that
    cannot be opened, or a source whose head cannot be read, is refused with
    `InvalidArgumentsError` before any program starts. A read or write failure of
    the caller's own source or target once the transfer runs raises `TransferError`.
@@ -389,10 +394,11 @@ The `l3io-wordpress-database` command has one subcommand per operation (`survey`
 `dump`, `load`, `schema-version`) and `check <operation>`.
 
 - **No password is accepted as an argument value.** Credentials come from
-  `--wp-config PATH`, from environment variable names (`--admin-user-env`,
-  `--admin-password-env`, and the same for the WordPress account), from
-  `--admin-aws-secret-id`/`--admin-aws-region`, or from an interactive prompt on a
-  terminal. An argument vector is visible to every user on the machine.
+  `--wp-config PATH`, from a user name with the name of the environment variable
+  holding its password (`--admin-user` with `--admin-password-env`, and `--db-user`
+  with `--db-password-env` for the WordPress account), from
+  `--admin-aws-secret-id`/`--admin-aws-region`, or, when no password variable is
+  given, from an interactive prompt on a terminal. An argument vector is visible to every user on the machine.
 - Destructive subcommands require `--confirm NAME`; `load` into a non-empty database
   requires `--replace NAME`.
 - Extra client options are passed as `--option=--name[=value]`, joined with `=` so
@@ -420,7 +426,7 @@ each is wrapped with `raise ... from` (AD-14).
 | `ProvisioningError` | a provisioning operation started and failed; carries the statements completed |
 | `DatabaseUnreachableError`, `AuthenticationFailedError`, `AccessDeniedError` | raised by the read operations `survey` and `schema_version`, which have no check form, and by a server error mid-operation |
 | `TransferError(verdict, exit_code, stderr)` | a dump or load started and failed; stderr is redacted |
-| `DecryptionError` | none of the supplied identities can decrypt the source (a wrong identity) |
+| `DecryptionError` | none of the supplied identities can decrypt the source (a wrong identity), or an identity file's passphrase is wrong |
 | `CorruptDumpError` | an encrypted source is truncated or damaged; kept distinct from `DecryptionError`, because the remedy differs |
 
 ## 11. Compatibility

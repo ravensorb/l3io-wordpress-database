@@ -171,14 +171,25 @@ def _preflight(
     required: tuple[str, ...],
     global_required: tuple[str, ...] = (),
 ) -> tuple[Verdict, Any | None]:
-    """Connect as the administrator and check server and privileges.
+    """Resolve the account, then :func:`_preflight_resolved`."""
+    resolved = _resolve_or_finding(admin)
+    if isinstance(resolved, Finding):
+        return Verdict(operation_name, (resolved,)), None
+    return _preflight_resolved(connection, resolved, operation_name, required, global_required)
+
+
+def _preflight_resolved(
+    connection: Connection,
+    resolved: ResolvedCredentials,
+    operation_name: str,
+    required: tuple[str, ...],
+    global_required: tuple[str, ...] = (),
+) -> tuple[Verdict, Any | None]:
+    """Connect as this account and check server and privileges.
 
     Returns the verdict and, only when it holds no blocker, the open session.
     """
     verdict = Verdict(operation_name)
-    resolved = _resolve_or_finding(admin)
-    if isinstance(resolved, Finding):
-        return verdict.with_findings(resolved), None
     try:
         session = open_connection(connection, resolved, database=None)
     except pymysql.err.MySQLError as exc:

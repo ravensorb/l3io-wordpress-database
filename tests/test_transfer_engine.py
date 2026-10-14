@@ -1,0 +1,247 @@
+"""The transfer engine against fake client programs, so no server is needed.
+
+Each fake is a shell script on PATH answering ``--version`` like a real tool.
+The engine is exercised through its internals (_start, DumpStream, _pump_load)
+because the public operations need a live server for their preflight.
+"""
+
+from __future__ import annotations
+
+import io
+import os
+import resource
+import signal
+import time
+from collections.abc import Iterable, Mapping
+from pathlib import Path
+from typing import Any
+
+import pytest
+from structlog.testing import capture_logs
+
+from l3io.wp.database import _client, transfer
+from l3io.wp.database.connection import Connection
+from l3io.wp.database.credentials import Explicit, ResolvedCredentials
+from l3io.wp.database.errors import InvalidArgumentsError, RefusedError, TransferError
+from l3io.wp.database.server import parse_version
+from l3io.wp.database.verdict import Code, Finding, Verdict
+
+CONN = Connection(host="127.0.0.1", database="wp_site", port=3306)
+SECRET = "engine-secret-password"
+CREDS = ResolvedCredentials("wpuser", SECRET)
+SERVER = parse_version("8.4.11")
+
+
+def fake(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, body: str
+) -> _client.ClientTool:
+    script = tmp_path / name
+    script.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "--version" ]; then echo "'
+        + name
+        + '  Ver 8.4.11 for Linux"; exit 0; fi\n'
+        + body
+    )
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    tool = _client.find_tool(
+        _client.PURPOSE_DUMP if "dump" in name else _client.PURPOSE_LOAD, SERVER.family
+    )
+    assert tool is not None
+    return tool
+
+
+def stream(tool: _client.ClientTool, recipients: list[str] | None = None) -> transfer.DumpStream:
+    process = transfer._start(tool, ["wp_site"], CREDS, CONN, for_load=False)
+    return transfer.DumpStream(
+        process,
+        tool=tool,
+        server=SERVER,
+        verdict=Verdict("dump"),
+        recipients=recipients,
+        password=SECRET,
+    )
+
+
+def test_dump_yields_the_tools_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = fake(tmp_path, monkeypatch, "mysqldump", 'echo "-- MySQL dump"; echo "SELECT 1;"\n')
+    s = stream(tool)
+    assert b"".join(s) == b"-- MySQL dump\nSELECT 1;\n"
+    assert s.result is not None
+    assert s.result.bytes == len(b"-- MySQL dump\nSELECT 1;\n")
+    assert s.result.verdict == Verdict("dump")
+
+
+def test_the_option_file_is_readable_and_never_echoed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Report only the size of what the defaults file holds, so the test can
+    # prove the fd is readable without the password ever being printed.
+    tool = fake(tmp_path, monkeypatch, "mysqldump", 'wc -c < "${1#--defaults-file=}"\n')
+    out = b"".join(stream(tool))
+    assert int(out.strip()) > 0
+    assert SECRET.encode() not in out
+
+
+def test_a_failing_tool_raises_at_the_end_not_silently(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tool = fake(
+        tmp_path,
+        monkeypatch,
+        "mysqldump",
+        f'echo "partial"; echo "mysqldump: Got error: 1044 for {SECRET}" >&2; exit 2\n',
+    )
+    s = stream(tool)
+    with pytest.raises(TransferError) as info:
+        list(s)
+    assert info.value.exit_code == 2
+    assert "1044" in info.value.stderr
+    assert SECRET not in info.value.stderr
+    assert SECRET not in str(info.value)
+
+
+def test_closing_early_kills_the_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = fake(
+        tmp_path,
+        monkeypatch,
+        "mysqldump",
+        "while true; do echo 'INSERT INTO t VALUES (1);'; done\n",
+    )
+    s = stream(tool)
+    next(s)
+    pid = s.pid
+    s.close()
+    time.sleep(0.2)
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
+def test_large_stderr_does_not_deadlock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = fake(
+        tmp_path,
+        monkeypatch,
+        "mysqldump",
+        "i=0; while [ $i -lt 20000 ]; do\n"
+        "  echo 'warning: something noisy happened here' >&2; i=$((i+1))\n"
+        "done; exit 3\n",
+    )
+    s = stream(tool)
+    with pytest.raises(TransferError) as info:
+        list(s)
+    assert info.value.exit_code == 3
+    assert len(info.value.stderr) <= transfer.STDERR_CAP + 100
+
+
+def test_dump_streams_in_bounded_chunks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = fake(tmp_path, monkeypatch, "mysqldump", "head -c 50000000 /dev/zero\n")
+    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    total = 0
+    for chunk in stream(tool):
+        assert len(chunk) <= transfer.CHUNK
+        total += len(chunk)
+    assert total == 50_000_000
+    grown_kib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before
+    assert grown_kib < 30_000
+
+
+def test_a_killed_tool_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = fake(tmp_path, monkeypatch, "mysqldump", "while true; do echo 'x'; done\n")
+    s = stream(tool)
+    next(s)
+    os.kill(s.pid, signal.SIGKILL)
+    with pytest.raises(TransferError):
+        list(s)
+
+
+def test_dump_to_a_path_is_atomic_and_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    good = fake(tmp_path, monkeypatch, "mysqldump", 'echo "SELECT 1;"\n')
+    target = tmp_path / "out" / "site.sql"
+    target.parent.mkdir()
+    transfer._write_atomically(stream(good), target)
+    assert target.read_bytes() == b"SELECT 1;\n"
+    assert (target.stat().st_mode & 0o777) == 0o600
+
+
+def test_a_failed_dump_leaves_no_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bad = fake(tmp_path, monkeypatch, "mysqldump", 'echo "partial"; exit 2\n')
+    target = tmp_path / "site.sql"
+    with pytest.raises(TransferError):
+        transfer._write_atomically(stream(bad), target)
+    assert list(tmp_path.glob("*site.sql*")) == []
+
+
+def test_encrypted_dump_round_trips(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("pyrage")
+    from l3io.wp.database import encryption
+
+    identity, recipient = encryption.generate_identity()
+    tool = fake(tmp_path, monkeypatch, "mysqldump", 'echo "SELECT 42;"\n')
+    data = b"".join(stream(tool, recipients=[recipient]))
+    assert data.startswith(encryption.AGE_HEADER)
+    out = io.BytesIO()
+    encryption.decrypt(io.BytesIO(data), out, [identity])
+    assert out.getvalue() == b"SELECT 42;\n"
+
+
+def test_an_unusable_recipient_fails_instead_of_hanging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Encryption fails before reading a byte; the tool's endless output must
+    # not leave it, and the stream with it, blocked on a full pipe.
+    pytest.importorskip("pyrage")
+    tool = fake(tmp_path, monkeypatch, "mysqldump", "while true; do echo 'x'; done\n")
+    with pytest.raises(TransferError) as info:
+        list(stream(tool, recipients=["not-a-key"]))
+    assert isinstance(info.value.__cause__, InvalidArgumentsError)
+
+
+def _completions(logs: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    return [e for e in logs if e.get("event") == "operation complete"]
+
+
+def test_a_dump_operation_ends_when_its_stream_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tool = fake(tmp_path, monkeypatch, "mysqldump", 'echo "SELECT 1;"\n')
+    monkeypatch.setattr(
+        transfer, "_dump_plan", lambda *_: transfer._Plan(Verdict("dump"), CREDS, tool, SERVER)
+    )
+    with capture_logs() as logs:
+        s = transfer.iter_dump(CONN, Explicit("wpuser", SECRET))
+        assert _completions(logs) == []
+        assert b"".join(s) == b"SELECT 1;\n"
+    [event] = _completions(logs)
+    assert event["outcome"] == "succeeded"
+    assert event["bytes"] == len(b"SELECT 1;\n")
+    assert SECRET not in repr(logs)
+
+
+def test_dump_writes_to_a_stream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = fake(tmp_path, monkeypatch, "mysqldump", 'echo "SELECT 1;"\n')
+    monkeypatch.setattr(
+        transfer, "_dump_plan", lambda *_: transfer._Plan(Verdict("dump"), CREDS, tool, SERVER)
+    )
+    out = io.BytesIO()
+    result = transfer.dump(CONN, Explicit("wpuser", SECRET), out)
+    assert out.getvalue() == b"SELECT 1;\n"
+    assert result.bytes == len(b"SELECT 1;\n")
+    assert result.tool == tool.label
+
+
+def test_a_refused_dump_ends_its_operation_and_starts_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refused = Verdict("dump", (Finding(Code.DATABASE_ABSENT, "'wp_site' does not exist"),))
+    monkeypatch.setattr(
+        transfer, "_dump_plan", lambda *_: transfer._Plan(refused, CREDS, None, SERVER)
+    )
+    monkeypatch.setattr(transfer, "_start", lambda *_, **__: pytest.fail("started a dump"))
+    with capture_logs() as logs, pytest.raises(RefusedError) as info:
+        transfer.iter_dump(CONN, Explicit("wpuser", SECRET))
+    assert info.value.verdict == refused
+    [event] = _completions(logs)
+    assert event["outcome"] == "refused"

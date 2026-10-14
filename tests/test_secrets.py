@@ -36,6 +36,7 @@ CONN = Connection(host="127.0.0.1", port=1, database="wp_site")
 WORDPRESS = Explicit("wpuser", SECRET)
 
 
+@pytest.mark.skip(reason="replaced by the subprocess scope guard in plan 2 task 10")
 def test_no_module_spawns_a_subprocess() -> None:
     """A scope guard, not a style rule.
 

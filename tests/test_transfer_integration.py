@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import io
 import os
+import shutil
+import tempfile
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -14,8 +16,8 @@ from pathlib import Path
 import pymysql
 import pytest
 
-from l3io.wp.database import Connection, Explicit
-from l3io.wp.database.errors import RefusedError
+from l3io.wp.database import Connection, Explicit, ensure
+from l3io.wp.database.errors import CorruptDumpError, DecryptionError, RefusedError, TransferError
 from l3io.wp.database.transfer import check_dump, check_load, dump, iter_dump, load
 from l3io.wp.database.verdict import Code
 
@@ -163,3 +165,110 @@ def test_sandbox_line_against_this_client(names: tuple[str, str], tmp_path: Path
         load(site(names[1]), ROOT, path, allow_unsandboxed=True)
     else:
         load(site(names[1]), ROOT, path)
+
+
+SECRET = "transfer-only-secret-value"
+
+
+def wordpress_site(name: str, password: str) -> tuple[Connection, Explicit]:
+    user = f"u_{name[-8:]}"
+    wp = Explicit(user, password)
+    ensure(site(name), ROOT, wp)
+    return site(name), wp
+
+
+def test_no_password_in_argv_environment_or_temp_files(names: tuple[str, str]) -> None:
+    conn, wp = wordpress_site(names[0], SECRET)
+    bulk(names[0])
+    temp = Path(tempfile.gettempdir())
+    before = set(temp.iterdir())
+    stream = iter_dump(conn, wp)
+    first = next(stream)
+    cmdline = Path(f"/proc/{stream.pid}/cmdline").read_bytes()
+    environ = Path(f"/proc/{stream.pid}/environ").read_bytes()
+    rest = b"".join(stream)
+    assert first and rest is not None
+    assert b"--defaults-file=/dev/fd/" in cmdline
+    assert SECRET.encode() not in cmdline
+    assert SECRET.encode() not in environ
+    assert b"MYSQL_PWD" not in environ
+    assert set(temp.iterdir()) == before
+
+
+def test_hostile_my_cnf_and_mylogin_cnf_change_nothing(names: tuple[str, str]) -> None:
+    home = Path.home()
+    fixture = Path(__file__).parent / "fixtures" / "hostile.mylogin.cnf"
+    planted = [home / ".mylogin.cnf", home / ".my.cnf"]
+    saved = {p: p.read_bytes() for p in planted if p.exists()}
+    try:
+        shutil.copyfile(fixture, planted[0])
+        planted[0].chmod(0o600)
+        planted[1].write_text("[client]\nuser=nobody\npassword=wrong\nhost=10.255.255.1\n")
+        result = dump(site(names[0]), ROOT, io.BytesIO())
+        assert result.bytes > 0
+    finally:
+        for path in planted:
+            if path in saved:
+                path.write_bytes(saved[path])
+            else:
+                path.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize(
+    "password", ["q'uo\"te", "back\\slash", "hash#semi;", "ab);cd", " spaced "]
+)
+def test_awkward_password_dumps(names: tuple[str, str], password: str) -> None:
+    conn, wp = wordpress_site(names[0], password)
+    assert dump(conn, wp, io.BytesIO()).bytes > 0
+
+
+def test_encrypted_round_trip(names: tuple[str, str], tmp_path: Path) -> None:
+    pytest.importorskip("pyrage")
+    from l3io.wp.database import encryption
+
+    identity, recipient = encryption.generate_identity()
+    path = tmp_path / "site.sql.age"
+    dump(site(names[0]), ROOT, path, recipients=[recipient])
+    assert path.read_bytes().startswith(encryption.AGE_HEADER)
+    with pytest.raises(RefusedError) as info:
+        load(site(names[1]), ROOT, path)
+    assert Code.IDENTITY_REQUIRED in info.value.verdict.codes
+    load(site(names[1]), ROOT, path, identities=[identity])
+    assert checksum(names[1]) == checksum(names[0])
+
+
+def test_wrong_identity_loads_nothing(names: tuple[str, str], tmp_path: Path) -> None:
+    pytest.importorskip("pyrage")
+    from l3io.wp.database import encryption
+
+    _, recipient = encryption.generate_identity()
+    other, _ = encryption.generate_identity()
+    path = tmp_path / "site.sql.age"
+    dump(site(names[0]), ROOT, path, recipients=[recipient])
+    with pytest.raises(DecryptionError):
+        load(site(names[1]), ROOT, path, identities=[other])
+    tables = sql(
+        f"SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = '{names[1]}'"  # noqa: S608
+    )
+    assert tables[0][0] == 0
+
+
+def test_truncated_encrypted_dump_is_corrupt(names: tuple[str, str], tmp_path: Path) -> None:
+    pytest.importorskip("pyrage")
+    from l3io.wp.database import encryption
+
+    identity, recipient = encryption.generate_identity()
+    path = tmp_path / "site.sql.age"
+    dump(site(names[0]), ROOT, path, recipients=[recipient])
+    path.write_bytes(path.read_bytes()[:-40])
+    with pytest.raises(CorruptDumpError):
+        load(site(names[1]), ROOT, path, identities=[identity])
+
+
+def test_a_dump_killed_mid_stream_raises(names: tuple[str, str]) -> None:
+    bulk(names[0])
+    stream = iter_dump(site(names[0]), ROOT)
+    next(stream)
+    os.kill(stream.pid, 9)
+    with pytest.raises(TransferError):
+        list(stream)

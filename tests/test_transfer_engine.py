@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import errno
+import gc
 import io
 import os
 import resource
@@ -141,6 +142,48 @@ def test_closing_early_kills_the_tool(tmp_path: Path, monkeypatch: pytest.Monkey
     time.sleep(0.2)
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
+
+
+def _exited(pid: int, within: float = 5.0) -> bool:
+    """Whether ``pid`` is gone (killed and reaped, not a zombie) within ``within`` seconds."""
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.mark.parametrize("encrypted", [False, True])
+def test_a_dropped_stream_stops_the_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, encrypted: bool
+) -> None:
+    recipients = None
+    if encrypted:
+        pytest.importorskip("pyrage")
+        from l3io.wp.database import encryption
+
+        recipients = [encryption.generate_identity()[1]]
+    tool = fake(
+        tmp_path,
+        monkeypatch,
+        "mysqldump",
+        "while true; do echo 'INSERT INTO t VALUES (1);'; done\n",
+    )
+    before = set(threading.enumerate())
+    s = stream(tool, recipients)
+    next(s)
+    pid = s.pid
+    threads = set(threading.enumerate()) - before
+    assert len(threads) == (2 if encrypted else 1)  # stderr drain, and encryption
+    del s
+    gc.collect()
+    assert _exited(pid), "the dump tool outlived its dropped stream"
+    for thread in threads:
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 def test_large_stderr_does_not_deadlock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

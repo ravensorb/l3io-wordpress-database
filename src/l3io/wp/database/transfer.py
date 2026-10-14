@@ -17,6 +17,7 @@ import subprocess
 import threading
 import time
 import uuid
+import weakref
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import ExitStack, suppress
 from dataclasses import dataclass
@@ -96,12 +97,82 @@ def _start(
         )
 
 
+class _DumpRun:
+    """A running dump's parts, held apart from its :class:`DumpStream`.
+
+    The stream's finalizer and the encryption thread reference this, never the
+    stream, so a stream dropped unfinished can still be collected and stopped.
+    """
+
+    def __init__(self, process: subprocess.Popen[bytes], verdict: Verdict, on_finish: Any) -> None:
+        if process.stdout is None or process.stderr is None:
+            msg = "a dump process needs piped stdout and stderr"
+            raise ValueError(msg)
+        self.process = process
+        self.verdict = verdict
+        self.stderr = _Stderr(process.stderr)
+        self.reader: IO[bytes] = process.stdout
+        self.thread: threading.Thread | None = None
+        self.error: BaseException | None = None
+        self.bytes = 0
+        self._on_finish = on_finish
+        self._lock = threading.Lock()
+
+    def notify(self, error: BaseException | None) -> None:
+        """Tell ``on_finish`` how the dump ended; only the first call counts."""
+        with self._lock:
+            callback, self._on_finish = self._on_finish, None
+        if callback is not None:
+            callback(error, self.bytes)
+
+
+def _stop(run: _DumpRun) -> None:
+    """Kill and reap a dump's program, release its pipes and end its operation."""
+    try:
+        run.process.kill()
+        run.process.wait()
+        with suppress(OSError):
+            run.reader.close()
+        # A collection can run this on the encryption thread itself, which cannot join itself.
+        if run.thread is not None and run.thread is not threading.current_thread():
+            # Killed, the program closes the plaintext pipe; with the reader closed,
+            # a thread blocked writing ciphertext fails with EPIPE.
+            run.thread.join(timeout=10)
+    finally:
+        run.notify(TransferError("dump closed before it finished", run.verdict, None, ""))
+
+
+def _start_encryption(run: _DumpRun, recipients: Sequence[str]) -> None:
+    """Encrypt the program's output on a thread; ``run.reader`` becomes the ciphertext."""
+    from . import encryption
+
+    plaintext = run.reader
+    read_fd, write_fd = os.pipe()
+    run.reader = os.fdopen(read_fd, "rb")
+    writer = os.fdopen(write_fd, "wb")
+
+    def encrypt() -> None:
+        try:
+            encryption.encrypt(plaintext, writer, recipients)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the consumer's thread
+            run.error = exc
+        finally:
+            with suppress(OSError):  # flushing to a reader that was closed
+                writer.close()
+            # Unread output would otherwise block the program, and wait() with it.
+            plaintext.close()
+
+    run.thread = threading.Thread(target=encrypt, daemon=True)
+    run.thread.start()
+
+
 class DumpStream:
     """A dump as an iterator of byte chunks.
 
     If the program fails or is killed, iteration raises :class:`TransferError`
     at the end instead of stopping. :meth:`close` (or leaving a ``with`` block)
-    before the end stops the program. ``result`` is set once iteration finishes.
+    before the end stops the program, as does dropping the stream unfinished.
+    ``result`` is set once iteration finishes.
     """
 
     def __init__(
@@ -115,50 +186,22 @@ class DumpStream:
         password: str,
         on_finish: Any = None,
     ) -> None:
-        self._process = process
+        self._run = _DumpRun(process, verdict, on_finish)
         self._tool = tool
         self._server = server
         self._verdict = verdict
         self._password = password
-        self._on_finish = on_finish
         self._started = time.monotonic()
-        self._bytes = 0
         self._done = False
-        self._error: BaseException | None = None
         self.result: TransferResult | None = None
-        if process.stdout is None or process.stderr is None:
-            msg = "a dump process needs piped stdout and stderr"
-            raise ValueError(msg)
-        self._stderr = _Stderr(process.stderr)
-        self._reader: IO[bytes] = process.stdout
-        self._encrypt_thread: threading.Thread | None = None
+        self._finalizer = weakref.finalize(self, _stop, self._run)
         if recipients:
-            self._start_encryption(process.stdout, recipients)
+            _start_encryption(self._run, recipients)
 
     @property
     def pid(self) -> int:
         """The program's process id, for diagnostics."""
-        return self._process.pid
-
-    def _start_encryption(self, plaintext: IO[bytes], recipients: Sequence[str]) -> None:
-        from . import encryption
-
-        read_fd, write_fd = os.pipe()
-        self._reader = os.fdopen(read_fd, "rb")
-        writer = os.fdopen(write_fd, "wb")
-
-        def run() -> None:
-            try:
-                encryption.encrypt(plaintext, writer, recipients)
-            except BaseException as exc:  # noqa: BLE001 - re-raised on the consumer's thread
-                self._error = exc
-            finally:
-                writer.close()
-                # Unread output would otherwise block the program, and wait() with it.
-                plaintext.close()
-
-        self._encrypt_thread = threading.Thread(target=run, daemon=True)
-        self._encrypt_thread.start()
+        return self._run.process.pid
 
     def __iter__(self) -> DumpStream:
         return self
@@ -166,54 +209,45 @@ class DumpStream:
     def __next__(self) -> bytes:
         if self._done:
             raise StopIteration
-        chunk = self._reader.read(CHUNK)
+        run = self._run
+        chunk = run.reader.read(CHUNK)
         if chunk:
-            self._bytes += len(chunk)
+            run.bytes += len(chunk)
             return chunk
         self._finish()
         raise StopIteration
 
     def _finish(self) -> None:
         self._done = True
-        if self._encrypt_thread is not None:
-            self._encrypt_thread.join()
-        code = self._process.wait()
-        stderr = self._stderr.text(self._password)
-        self._reader.close()
-        if code != 0 or self._error is not None:
-            if self._error is not None:
-                msg = f"dump failed: encryption: {self._error}"
+        run = self._run
+        if run.thread is not None:
+            run.thread.join()
+        code = run.process.wait()
+        stderr = run.stderr.text(self._password)
+        run.reader.close()
+        self._finalizer.detach()
+        if code != 0 or run.error is not None:
+            if run.error is not None:
+                msg = f"dump failed: encryption: {run.error}"
             else:
                 first = stderr.strip().splitlines()[0] if stderr.strip() else "no error output"
                 msg = f"dump failed: {self._tool.name} exited {code}: {first}"
             error = TransferError(msg, self._verdict, code, stderr)
-            self._notify(error)
-            raise error from self._error
+            run.notify(error)
+            raise error from run.error
         self.result = TransferResult(
-            self._bytes,
+            run.bytes,
             round((time.monotonic() - self._started) * 1000, 1),
             self._tool.label,
             self._server,
             self._verdict,
         )
-        self._notify(None)
-
-    def _notify(self, error: BaseException | None) -> None:
-        if self._on_finish is not None:
-            callback, self._on_finish = self._on_finish, None
-            callback(error, self._bytes)
+        run.notify(None)
 
     def close(self) -> None:
         """Stop the program if it is still running."""
-        if self._done:
-            return
         self._done = True
-        self._process.kill()
-        self._process.wait()
-        self._reader.close()
-        if self._encrypt_thread is not None:
-            self._encrypt_thread.join(timeout=10)
-        self._notify(TransferError("dump closed before it finished", self._verdict, None, ""))
+        self._finalizer()
 
     def __enter__(self) -> DumpStream:
         return self

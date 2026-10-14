@@ -955,3 +955,40 @@ def test_the_header_is_detected_through_short_reads() -> None:
     assert age.needs_identity
     assert sandbox.sandboxed
     assert sandbox.family is ServerFamily.MARIADB
+
+
+def test_no_client_tool_is_a_blocker_naming_those_tried(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_client, "find_tool", lambda purpose, family: None)
+    server = parse_version("8.4.6")
+    tool, findings = transfer._tool_findings(_client.PURPOSE_DUMP, server)
+    assert tool is None
+    [finding] = findings
+    assert finding.code is Code.CLIENT_TOOL_MISSING
+    assert finding.fields["tools"] == ", ".join(
+        _client.candidates(_client.PURPOSE_DUMP, server.family)
+    )
+
+
+def test_a_tool_from_the_other_family_or_older_is_skew(monkeypatch: pytest.MonkeyPatch) -> None:
+    for family, version in ((ServerFamily.MARIADB, (11, 4, 13)), (ServerFamily.MYSQL, (8, 0, 40))):
+        tool = _client.ClientTool(
+            "mysqldump", "/usr/bin/mysqldump", family, version, ".".join(map(str, version))
+        )
+        monkeypatch.setattr(_client, "find_tool", lambda purpose, fam, tool=tool: tool)
+        found, findings = transfer._tool_findings(_client.PURPOSE_DUMP, parse_version("8.4.6"))
+        assert found is tool
+        assert [f.code for f in findings] == [Code.CLIENT_SERVER_SKEW]
+
+
+def test_a_matching_tool_has_no_findings(monkeypatch: pytest.MonkeyPatch) -> None:
+    tool = _client.ClientTool(
+        "mysqldump", "/usr/bin/mysqldump", ServerFamily.MYSQL, (8, 4, 6), "8.4.6"
+    )
+    monkeypatch.setattr(_client, "find_tool", lambda purpose, family: tool)
+    assert transfer._tool_findings(_client.PURPOSE_DUMP, parse_version("8.4.6")) == (tool, [])
+
+
+def test_no_dev_fd_is_a_blocker(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(transfer, "DEV_FD", tmp_path / "absent")
+    findings = transfer._platform_and_option_findings((), _client.DUMP_OPTIONS)
+    assert [f.code for f in findings] == [Code.PLATFORM_UNSUPPORTED]

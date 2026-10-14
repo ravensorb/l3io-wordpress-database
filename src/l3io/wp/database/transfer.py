@@ -39,6 +39,9 @@ from .verdict import Code, Finding, Verdict
 CHUNK = 64 * 1024
 STDERR_CAP = 64 * 1024
 
+#: Where the option-file pipe is named for the child; absent on Windows.
+DEV_FD = Path("/dev/fd")
+
 DUMP_PRIVILEGES = ("SELECT", "SHOW VIEW", "TRIGGER")
 LOAD_PRIVILEGES = ("CREATE", "INSERT", "ALTER", "DROP", "INDEX", "REFERENCES", "CREATE VIEW")
 
@@ -266,7 +269,7 @@ class _Plan:
 
 def _platform_and_option_findings(options: Sequence[str], allowed: frozenset[str]) -> list[Finding]:
     findings: list[Finding] = []
-    if not Path("/dev/fd").is_dir():
+    if not DEV_FD.is_dir():
         findings.append(
             Finding(Code.PLATFORM_UNSUPPORTED, "export and import need /dev/fd (Linux or macOS)")
         )

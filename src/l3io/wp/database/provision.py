@@ -47,7 +47,7 @@ from .identifiers import (
     validate_user_name,
 )
 from .inspection import inspect
-from .server import Privileges, account_privileges, detect_server, grantee
+from .server import Privileges, ServerInfo, account_privileges, detect_server, grantee
 from .state import ConnectionState
 from .verdict import Code, Finding, Verdict
 
@@ -208,24 +208,7 @@ def _preflight_resolved(
 
     try:
         with session.cursor() as cur:
-            server = detect_server(cur)
-            findings: list[Finding] = []
-            if not server.is_supported:
-                findings.append(
-                    Finding(
-                        Code.SERVER_UNSUPPORTED,
-                        f"{server.family} {server.version_text} is below the supported floor",
-                        {"version": server.version_text},
-                    )
-                )
-            elif server.is_end_of_life:
-                findings.append(
-                    Finding(
-                        Code.END_OF_LIFE_SERVER,
-                        f"{server.family} {server.version_text} is past upstream end of life",
-                        {"version": server.version_text},
-                    )
-                )
+            findings: list[Finding] = _server_findings(detect_server(cur))
             findings += _privilege_findings(
                 account_privileges(cur, connection.database), required, global_required
             )
@@ -240,6 +223,27 @@ def _preflight_resolved(
         session.close()
         return verdict, None
     return verdict, session
+
+
+def _server_findings(server: ServerInfo) -> list[Finding]:
+    """A server below the floor is a blocker; one past upstream end of life, a warning."""
+    if not server.is_supported:
+        return [
+            Finding(
+                Code.SERVER_UNSUPPORTED,
+                f"{server.family} {server.version_text} is below the supported floor",
+                {"version": server.version_text},
+            )
+        ]
+    if server.is_end_of_life:
+        return [
+            Finding(
+                Code.END_OF_LIFE_SERVER,
+                f"{server.family} {server.version_text} is past upstream end of life",
+                {"version": server.version_text},
+            )
+        ]
+    return []
 
 
 def _ensure_facts(

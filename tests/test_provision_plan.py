@@ -16,7 +16,7 @@ from l3io.wp.database.identifiers import (
     validate_charset,
 )
 from l3io.wp.database.provision import EnsureFacts, plan_ensure
-from l3io.wp.database.server import Privileges
+from l3io.wp.database.server import Privileges, parse_version
 from l3io.wp.database.verdict import Code
 
 
@@ -134,3 +134,22 @@ def test_server_error_in_preflight_is_package_owned_and_closes_session(
         )
     assert not isinstance(info.value, pymysql.err.MySQLError)
     assert session.closed
+
+
+def test_a_server_below_the_floor_is_unsupported() -> None:
+    for version in ("5.7.44", "10.1.48-MariaDB"):
+        [finding] = provision._server_findings(parse_version(version))
+        assert finding.code is Code.SERVER_UNSUPPORTED
+        assert finding.fields["version"] == version
+
+
+def test_a_retired_series_is_end_of_life() -> None:
+    for version in ("8.0.40", "10.2.44-MariaDB"):
+        [finding] = provision._server_findings(parse_version(version))
+        assert finding.code is Code.END_OF_LIFE_SERVER
+        assert finding.fields["version"] == version
+
+
+def test_a_current_server_has_no_server_findings() -> None:
+    for version in ("8.4.6", "9.7.0", "11.4.13-MariaDB"):
+        assert provision._server_findings(parse_version(version)) == []

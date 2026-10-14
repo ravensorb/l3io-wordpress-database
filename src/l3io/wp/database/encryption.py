@@ -36,7 +36,11 @@ def generate_identity() -> tuple[str, str]:
 def read_identity(path: str | Path, passphrase: str | None = None) -> str:
     """The age identity in a file, optionally passphrase-protected (age's own format)."""
     pyrage = _pyrage()
-    data = Path(path).read_bytes()
+    try:
+        data = Path(path).read_bytes()
+    except OSError as exc:
+        msg = f"cannot read the identity file {str(path)!r}: {exc.strerror}"
+        raise InvalidArgumentsError(msg) from exc
     if passphrase is not None:
         try:
             data = pyrage.passphrase.decrypt(data, passphrase)
@@ -88,7 +92,14 @@ def _identities(pyrage: Any, identities: Sequence[str]) -> list[Any]:
 def encrypt(reader: IO[bytes], writer: IO[bytes], recipients: Sequence[str]) -> None:
     """Stream ``reader`` into ``writer`` as age, for every recipient."""
     pyrage = _pyrage()
-    pyrage.encrypt_io(reader, writer, _recipients(pyrage, recipients))
+    keys = _recipients(pyrage, recipients)
+    try:
+        pyrage.encrypt_io(reader, writer, keys)
+    except pyrage.EncryptError as exc:
+        # pyrage flattens the caller's I/O exception into text, e.g. "OSError: [Errno 28] ..."
+        if str(exc).startswith("BrokenPipeError"):
+            raise BrokenPipeError(str(exc)) from exc
+        raise OSError(str(exc)) from exc
 
 
 def decrypt(reader: IO[bytes], writer: IO[bytes], identities: Sequence[str]) -> None:
@@ -106,5 +117,9 @@ def decrypt(reader: IO[bytes], writer: IO[bytes], identities: Sequence[str]) -> 
         msg = "the encrypted dump is damaged or not an age file"
         raise CorruptDumpError(msg) from exc
     except OSError as exc:
+        # pyrage's own stream failure is a bare OSError without errno; anything else is
+        # the caller's reader or writer failing and keeps its type and errno.
+        if type(exc) is not OSError or exc.errno is not None:
+            raise
         msg = "the encrypted dump is truncated or damaged"
         raise CorruptDumpError(msg) from exc

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import io
 import sys
 from pathlib import Path
@@ -25,6 +26,19 @@ def _encrypt(recipient: str) -> bytes:
     out = io.BytesIO()
     encryption.encrypt(io.BytesIO(PLAIN), out, [recipient])
     return out.getvalue()
+
+
+class _FailingWriter(io.BytesIO):
+    def __init__(self, error: OSError) -> None:
+        super().__init__()
+        self.error = error
+
+    def write(self, data: object) -> int:
+        raise self.error
+
+
+def _disk_full() -> OSError:
+    return OSError(errno.ENOSPC, "No space left on device")
 
 
 def test_round_trip() -> None:
@@ -55,6 +69,35 @@ def test_damage_is_a_corrupt_dump_error(damage: str) -> None:
         data = bytearray(b"hello, not age at all")
     with pytest.raises(CorruptDumpError):
         encryption.decrypt(io.BytesIO(bytes(data)), io.BytesIO(), [identity])
+
+
+def test_decrypt_passes_the_callers_own_write_failure_through() -> None:
+    identity, recipient = encryption.generate_identity()
+    data = _encrypt(recipient)
+    with pytest.raises(OSError) as info:
+        encryption.decrypt(io.BytesIO(data), _FailingWriter(_disk_full()), [identity])
+    assert info.value.errno == errno.ENOSPC
+    assert not isinstance(info.value, CorruptDumpError)
+
+
+def test_encrypt_reports_a_write_failure_as_an_os_error() -> None:
+    _, recipient = encryption.generate_identity()
+    with pytest.raises(OSError) as info:
+        encryption.encrypt(io.BytesIO(PLAIN), _FailingWriter(_disk_full()), [recipient])
+    assert type(info.value).__module__ == "builtins"
+
+
+def test_encrypt_reports_a_closed_consumer_as_a_broken_pipe() -> None:
+    _, recipient = encryption.generate_identity()
+    with pytest.raises(BrokenPipeError):
+        encryption.encrypt(io.BytesIO(PLAIN), _FailingWriter(BrokenPipeError()), [recipient])
+
+
+def test_read_identity_of_a_missing_file_names_the_path(tmp_path: Path) -> None:
+    missing = tmp_path / "no-such-identity.txt"
+    with pytest.raises(InvalidArgumentsError) as info:
+        encryption.read_identity(missing)
+    assert str(missing) in str(info.value)
 
 
 def test_a_bad_recipient_does_not_echo_much(monkeypatch: pytest.MonkeyPatch) -> None:

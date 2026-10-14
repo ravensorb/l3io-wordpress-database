@@ -35,3 +35,15 @@ def test_credentials_absent_lists_sources() -> None:
 def test_provisioning_error_records_completed_steps() -> None:
     exc = errors.ProvisioningError("grant failed", completed=("create_database",))
     assert exc.completed == ("create_database",)
+
+
+def test_transfer_error_carries_verdict_exit_code_and_stderr() -> None:
+    verdict = Verdict("dump")
+    exc = errors.TransferError("dump failed", verdict, 2, "access denied")
+    assert (exc.verdict, exc.exit_code, exc.stderr) == (verdict, 2, "access denied")
+    assert "dump failed" in str(exc)
+
+
+def test_decryption_and_corruption_are_distinct() -> None:
+    assert not issubclass(errors.DecryptionError, errors.CorruptDumpError)
+    assert not issubclass(errors.CorruptDumpError, errors.DecryptionError)

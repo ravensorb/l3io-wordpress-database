@@ -38,6 +38,15 @@ class Code(StrEnum):
     END_OF_LIFE_SERVER = "end_of_life_server"
     MISSING_DEPENDENCY = "missing_dependency"
     PASSWORD_UNVERIFIED = "password_unverified"  # noqa: S105 - a finding code, not a password
+    CLIENT_TOOL_MISSING = "client_tool_missing"
+    CLIENT_SERVER_SKEW = "client_server_skew"
+    PLATFORM_UNSUPPORTED = "platform_unsupported"
+    OPTION_NOT_ALLOWED = "option_not_allowed"
+    DATABASE_NOT_EMPTY = "database_not_empty"
+    INCOMPATIBLE_DUMP_SOURCE = "incompatible_dump_source"
+    CROSS_FAMILY_DUMP = "cross_family_dump"
+    STORED_OBJECTS_PRESENT = "stored_objects_present"
+    IDENTITY_REQUIRED = "identity_required"
 
     @property
     def severity(self) -> Severity:
@@ -67,6 +76,15 @@ _SEVERITY: Mapping[Code, Severity] = MappingProxyType(
         Code.END_OF_LIFE_SERVER: _W,
         Code.MISSING_DEPENDENCY: _B,
         Code.PASSWORD_UNVERIFIED: _W,
+        Code.CLIENT_TOOL_MISSING: _B,
+        Code.CLIENT_SERVER_SKEW: _W,
+        Code.PLATFORM_UNSUPPORTED: _B,
+        Code.OPTION_NOT_ALLOWED: _B,
+        Code.DATABASE_NOT_EMPTY: _B,
+        Code.INCOMPATIBLE_DUMP_SOURCE: _B,
+        Code.CROSS_FAMILY_DUMP: _W,
+        Code.STORED_OBJECTS_PRESENT: _W,
+        Code.IDENTITY_REQUIRED: _B,
     }
 )
 
@@ -97,6 +115,30 @@ _DESCRIPTION: Mapping[Code, str] = MappingProxyType(
         Code.MISSING_DEPENDENCY: (
             "a credential source needs an extra that is not installed; fields.extra names it"
         ),
+        Code.CLIENT_TOOL_MISSING: (
+            "no suitable dump or client program is on PATH; fields.tools names those tried"
+        ),
+        Code.CLIENT_SERVER_SKEW: (
+            "the client program's family, or its major.minor version, is older than or differs "
+            "from the server's"
+        ),
+        Code.PLATFORM_UNSUPPORTED: "export and import need /dev/fd, which this platform lacks",
+        Code.OPTION_NOT_ALLOWED: (
+            "a caller-supplied client option is not on the allow-list; fields.option names it"
+        ),
+        Code.DATABASE_NOT_EMPTY: "the load target holds tables and replace= was not given",
+        Code.INCOMPATIBLE_DUMP_SOURCE: (
+            "the dump begins with MariaDB's sandbox line and this client cannot read it; "
+            "allow_unsandboxed=True strips that line"
+        ),
+        Code.CROSS_FAMILY_DUMP: (
+            "the dump comes from the other server family; collations it uses may not exist here"
+        ),
+        Code.STORED_OBJECTS_PRESENT: (
+            "the database has views or triggers: they carry DEFINER clauses that loading needs "
+            "privilege for, and MariaDB keeps their original text, which may name this schema"
+        ),
+        Code.IDENTITY_REQUIRED: "the source is age-encrypted and no identity was supplied",
     }
 )
 

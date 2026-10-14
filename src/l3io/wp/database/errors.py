@@ -131,3 +131,21 @@ class RefusedError(DatabaseError):
         self.verdict = verdict
         reasons = "; ".join(f"{f.code}: {f.message}" for f in verdict.blockers)
         super().__init__(f"{verdict.operation} refused: {reasons}")
+
+
+class TransferError(DatabaseError):
+    """A dump or load started and failed. ``stderr`` is capped and redacted."""
+
+    def __init__(self, message: str, verdict: Verdict, exit_code: int | None, stderr: str) -> None:
+        self.verdict = verdict
+        self.exit_code = exit_code
+        self.stderr = stderr
+        super().__init__(message)
+
+
+class DecryptionError(DatabaseError):
+    """None of the supplied identities can decrypt the source."""
+
+
+class CorruptDumpError(DatabaseError):
+    """An encrypted source is truncated, damaged, or not an age file."""

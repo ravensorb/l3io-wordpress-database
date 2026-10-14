@@ -57,3 +57,21 @@ def test_findings_are_immutable() -> None:
     finding = Finding(Code.UNREACHABLE, "down", {"host": "db"})
     with pytest.raises(TypeError):
         finding.fields["host"] = "other"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    ("code", "severity"),
+    [
+        (Code.CLIENT_TOOL_MISSING, Severity.BLOCKER),
+        (Code.CLIENT_SERVER_SKEW, Severity.WARNING),
+        (Code.PLATFORM_UNSUPPORTED, Severity.BLOCKER),
+        (Code.OPTION_NOT_ALLOWED, Severity.BLOCKER),
+        (Code.DATABASE_NOT_EMPTY, Severity.BLOCKER),
+        (Code.INCOMPATIBLE_DUMP_SOURCE, Severity.BLOCKER),
+        (Code.CROSS_FAMILY_DUMP, Severity.WARNING),
+        (Code.STORED_OBJECTS_PRESENT, Severity.WARNING),
+        (Code.IDENTITY_REQUIRED, Severity.BLOCKER),
+    ],
+)
+def test_transfer_code_severities(code: Code, severity: Severity) -> None:
+    assert code.severity is severity

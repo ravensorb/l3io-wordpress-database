@@ -24,9 +24,13 @@ from pathlib import Path
 from typing import IO, Any, cast
 
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from structlog.testing import capture_logs
 
-from l3io.wp.database import _client, transfer
+from l3io.wp.database import _client, _observe, transfer
 from l3io.wp.database.connection import Connection
 from l3io.wp.database.credentials import Explicit, ResolvedCredentials
 from l3io.wp.database.errors import (
@@ -339,6 +343,107 @@ def _recording_start(monkeypatch: pytest.MonkeyPatch) -> list[subprocess.Popen[b
 
     monkeypatch.setattr(transfer, "_start", record)
     return started
+
+
+@pytest.fixture
+def spans(monkeypatch: pytest.MonkeyPatch) -> tuple[InMemorySpanExporter, trace.Tracer]:
+    """The package's spans in memory, and a caller's tracer on the same provider."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(_observe, "_tracer", provider.get_tracer("l3io.wp.database"))
+    return exporter, provider.get_tracer("caller")
+
+
+def _finished(exporter: InMemorySpanExporter) -> dict[str, Any]:
+    return {s.name: s for s in exporter.get_finished_spans()}
+
+
+def test_a_dump_consumed_inside_another_span_leaves_the_callers_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    spans: tuple[InMemorySpanExporter, trace.Tracer],
+) -> None:
+    exporter, tracer = spans
+    _planned(tmp_path, monkeypatch, 'echo "SELECT 1;"\n')
+    with tracer.start_as_current_span("job") as job:
+        s = transfer.iter_dump(CONN, Explicit("wpuser", SECRET))
+        assert trace.get_current_span() is job
+        with tracer.start_as_current_span("upload"):
+            assert b"".join(s) == b"SELECT 1;\n"
+        assert trace.get_current_span() is job
+    assert trace.get_current_span() is trace.INVALID_SPAN
+    finished = _finished(exporter)
+    dump, upload = finished["l3io.wp.database.dump"], finished["upload"]
+    job_id = job.get_span_context().span_id
+    assert dump.parent is not None
+    assert dump.parent.span_id == job_id
+    assert upload.parent is not None
+    assert upload.parent.span_id == job_id
+    assert dump.status.status_code is not trace.StatusCode.ERROR
+    assert dump.attributes["db.name"] == "wp_site"
+
+
+def test_a_dump_finished_on_another_thread_detaches_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    spans: tuple[InMemorySpanExporter, trace.Tracer],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    exporter, _ = spans
+    _planned(tmp_path, monkeypatch, 'echo "SELECT 1;"\n')
+    s = transfer.iter_dump(CONN, Explicit("wpuser", SECRET))
+    worker = threading.Thread(target=lambda: list(s))
+    worker.start()
+    worker.join(timeout=10)
+    assert "detach" not in caplog.text
+    assert trace.get_current_span() is trace.INVALID_SPAN
+    assert "l3io.wp.database.dump" in _finished(exporter)
+
+
+@pytest.mark.parametrize("how", ["close", "drop"])
+def test_a_dump_stopped_early_fails_its_operation_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    spans: tuple[InMemorySpanExporter, trace.Tracer],
+    how: str,
+) -> None:
+    exporter, _ = spans
+    _planned(tmp_path, monkeypatch, "while true; do echo 'INSERT INTO t VALUES (1);'; done\n")
+    with capture_logs() as logs:
+        s = transfer.iter_dump(CONN, Explicit("wpuser", SECRET))
+        next(s)
+        pid = s.pid
+        if how == "close":
+            s.close()
+            s.close()
+        else:
+            del s
+            gc.collect()
+    assert _exited(pid)
+    [event] = _completions(logs)
+    assert event["outcome"] == "failed"
+    assert event["bytes"] > 0
+    [dump] = exporter.get_finished_spans()
+    assert dump.status.status_code is trace.StatusCode.ERROR
+    assert trace.get_current_span() is trace.INVALID_SPAN
+
+
+def test_a_refused_dump_span_carries_its_codes(
+    monkeypatch: pytest.MonkeyPatch, spans: tuple[InMemorySpanExporter, trace.Tracer]
+) -> None:
+    exporter, _ = spans
+    refused = Verdict("dump", (Finding(Code.DATABASE_ABSENT, "'wp_site' does not exist"),))
+    monkeypatch.setattr(
+        transfer, "_dump_plan", lambda *_: transfer._Plan(refused, CREDS, None, SERVER)
+    )
+    with pytest.raises(RefusedError):
+        transfer.iter_dump(CONN, Explicit("wpuser", SECRET))
+    [dump] = exporter.get_finished_spans()
+    assert dump.attributes is not None
+    assert dump.attributes["l3io.verdict.codes"] == ("database_absent",)
+    assert dump.status.status_code is trace.StatusCode.ERROR
+    assert trace.get_current_span() is trace.INVALID_SPAN
 
 
 @pytest.mark.parametrize("text_mode", ["stringio", "file"])

@@ -28,7 +28,7 @@ import pymysql
 
 from . import _client
 from ._client import ClientTool
-from ._observe import VERDICT_KEY, operation
+from ._observe import VERDICT_KEY, Running, operation
 from .connection import Connection
 from .credentials import CredentialSource, ResolvedCredentials
 from .errors import DatabaseUnreachableError, InvalidArgumentsError, RefusedError, TransferError
@@ -367,43 +367,51 @@ def iter_dump(
     options: Sequence[str] = (),
 ) -> DumpStream:
     """The dump as a :class:`DumpStream` of byte chunks (age-encrypted if ``recipients``)."""
-    # The operation's span outlives this call: a failure here ends it on leaving
-    # the block, and success hands it to the stream, which ends it when the dump does.
-    with ExitStack() as stack:
-        fields = stack.enter_context(operation("dump", connection))
-        plan = _dump_plan(connection, credentials, options)
-        fields[VERDICT_KEY] = plan.verdict
-        if (
-            not plan.verdict.ok
-            or plan.tool is None
-            or plan.server is None
-            or plan.credentials is None
-        ):
-            raise RefusedError(plan.verdict)
-        if recipients is not None:
-            from . import encryption
+    # The operation outlives this call: a failure here ends it at once, and
+    # success hands it to the stream, which ends it when the dump does.
+    running = Running("dump", connection)
 
-            encryption.check_recipients(recipients)
-        try:
-            process = _start(
-                plan.tool,
-                _client.dump_args(plan.tool, connection.database, options),
-                plan.credentials,
-                connection,
-                for_load=False,
-            )
-        except OSError as exc:
-            msg = f"could not start {plan.tool.path}: {exc.strerror or exc}"
-            raise TransferError(msg, plan.verdict, None, "") from exc
+    def finish(error: BaseException | None, count: int) -> None:
+        running.fields["bytes"] = count
+        running.end(error)
 
-        def finish(error: BaseException | None, count: int) -> None:
-            fields["bytes"] = count
-            if error is None:
-                span.close()
-            else:
-                span.__exit__(type(error), error, error.__traceback__)
+    try:
+        with running.current() as fields:
+            return _start_dump(connection, credentials, recipients, options, fields, finish)
+    except BaseException as exc:
+        running.end(exc)
+        raise
 
-        stream = DumpStream(
+
+def _start_dump(
+    connection: Connection,
+    credentials: CredentialSource,
+    recipients: Sequence[str] | None,
+    options: Sequence[str],
+    fields: dict[str, object],
+    finish: Any,
+) -> DumpStream:
+    plan = _dump_plan(connection, credentials, options)
+    fields[VERDICT_KEY] = plan.verdict
+    if not plan.verdict.ok or plan.tool is None or plan.server is None or plan.credentials is None:
+        raise RefusedError(plan.verdict)
+    if recipients is not None:
+        from . import encryption
+
+        encryption.check_recipients(recipients)
+    try:
+        process = _start(
+            plan.tool,
+            _client.dump_args(plan.tool, connection.database, options),
+            plan.credentials,
+            connection,
+            for_load=False,
+        )
+    except OSError as exc:
+        msg = f"could not start {plan.tool.path}: {exc.strerror or exc}"
+        raise TransferError(msg, plan.verdict, None, "") from exc
+    try:
+        return DumpStream(
             process,
             tool=plan.tool,
             server=plan.server,
@@ -412,8 +420,9 @@ def iter_dump(
             password=plan.credentials.password,
             on_finish=finish,
         )
-        span = stack.pop_all()
-    return stream
+    except BaseException:
+        _abandon(process)
+        raise
 
 
 @dataclass(frozen=True, slots=True)

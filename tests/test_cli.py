@@ -183,6 +183,22 @@ def test_dump_to_stdout_keeps_json_off_stdout(
     assert '"event": "dumping"' in captured.err
 
 
+def test_a_failed_dump_to_stdout_exits_failed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from l3io.wp.database.errors import TransferError
+
+    def fake_dump(connection, credentials, to, **kw):  # type: ignore[no-untyped-def]
+        msg = "writing the dump to the output stream failed: No space left on device"
+        raise TransferError(msg, Verdict("dump"), None, "")
+
+    monkeypatch.setattr(cli, "dump", fake_dump)
+    assert cli.main(["dump", *SITE, *WP, "--output", "-"]) == cli.Exit.FAILED
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "No space left on device" in captured.err
+
+
 def test_load_passes_replace_and_options(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     from l3io.wp.database.server import parse_version
     from l3io.wp.database.transfer import TransferResult

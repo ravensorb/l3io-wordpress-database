@@ -341,6 +341,35 @@ def test_a_failing_stream_target_is_a_transfer_error_and_reaps_the_tool(
         os.kill(process.pid, 0)
 
 
+class _UnflushableWriter:
+    """Accepts every write, then fails to flush: the last chunk never lands."""
+
+    def __init__(self) -> None:
+        self.written = bytearray()
+
+    def write(self, data: bytes) -> int:
+        self.written += data
+        return len(data)
+
+    def flush(self) -> None:
+        raise _disk_full()
+
+
+def test_a_stream_target_that_cannot_flush_is_a_transfer_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _planned(tmp_path, monkeypatch, 'echo "SELECT 1;"\n')
+    started = _recording_start(monkeypatch)
+    target = _UnflushableWriter()
+    with pytest.raises(TransferError) as info:
+        transfer.dump(CONN, Explicit("wpuser", SECRET), cast(IO[bytes], target))
+    assert bytes(target.written) == b"SELECT 1;\n"
+    assert isinstance(info.value.__cause__, OSError)
+    assert info.value.__cause__.errno == errno.ENOSPC
+    [process] = started
+    assert process.returncode is not None
+
+
 def test_a_failing_path_target_is_a_transfer_error_and_leaves_no_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

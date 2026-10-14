@@ -450,6 +450,8 @@ def dump(
             try:
                 for chunk in stream:
                     to.write(chunk)
+                # Unflushed, the last chunk could still be lost after success is reported.
+                to.flush()
             except OSError as exc:
                 stream.close()
                 raise _write_failed(stream, "the output stream", exc) from exc

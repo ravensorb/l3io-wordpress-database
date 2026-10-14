@@ -93,9 +93,10 @@ verify-wheel: build ## Install the BUILT wheel into an isolated env and import i
 	    python -c "from l3io.wp import database; print('import ok', database.__version__)"; \
 	$(UV) run --isolated --no-project --with "$$wheel" python -c "\
 import importlib.util, sys; \
-[sys.exit('base install pulled ' + m) for m in ('boto3','botocore','l3io.wp.config') if importlib.util.find_spec(m) is not None]; \
+[sys.exit('base install pulled ' + m) for m in ('boto3','botocore','l3io.wp.config','pyrage') if importlib.util.find_spec(m) is not None]; \
 print('base install is clean')"; \
-	$(UV) run --isolated --no-project --with "$$wheel" l3io-wordpress-database --version
+	$(UV) run --isolated --no-project --with "$$wheel" l3io-wordpress-database --version; \
+	bash tools/verify_extras.sh "$$wheel"
 
 ci: ## Replay the CI pipeline locally under act
 	$(ACT_RUNNER) $(ACT) $(ACT_FLAGS)

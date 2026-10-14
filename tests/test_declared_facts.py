@@ -247,3 +247,38 @@ def test_every_runtime_requirement_has_an_upper_bound() -> None:
 
 def test_an_unbounded_requirement_is_caught() -> None:
     assert unbounded(["boto3>=1.34", "pyrage>=1.4,<2", "x==1.0", "y~=2.1"]) == ["boto3>=1.34"]
+
+
+# ------------------------------------------------------------ extras
+
+
+#: What each extra makes importable. Hand-kept, so the test below fails when an
+#: extra is added without deciding what a base install must not contain.
+EXTRA_IMPORTS = {"aws": "boto3", "wpconfig": "l3io.wp.config", "encryption": "pyrage"}
+_EXTRA_LEG = re.compile(r"l3io-wordpress-database\[(\w+)\] @")
+
+
+def extras_verified(script: Path) -> set[str]:
+    return set(_EXTRA_LEG.findall(script.read_text(encoding="utf-8")))
+
+
+def test_every_extra_has_an_install_leg() -> None:
+    extras = set(_project()["optional-dependencies"])
+    assert extras, "no extras declared -- this guard is vacuous"
+    assert set(EXTRA_IMPORTS) == extras
+    assert extras_verified(REPO_ROOT / "tools" / "verify_extras.sh") == extras
+
+
+def test_the_base_install_check_forbids_every_extras_import() -> None:
+    for path in (REPO_ROOT / "Makefile", WORKFLOWS / "ci.yml"):
+        text = path.read_text(encoding="utf-8")
+        missing = [
+            m for m in EXTRA_IMPORTS.values() if f"'{m}'" not in text and f'"{m}"' not in text
+        ]
+        assert not missing, f"{path.name}'s base-install check does not forbid {missing}"
+
+
+def test_an_extra_without_a_leg_is_caught(tmp_path: Path) -> None:
+    script = tmp_path / "verify_extras.sh"
+    script.write_text('uv run --with "l3io-wordpress-database[aws] @ $url" python -c 1\n')
+    assert extras_verified(script) == {"aws"}

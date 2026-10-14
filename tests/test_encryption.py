@@ -131,6 +131,25 @@ def test_read_identity_plain_and_passphrase_protected(tmp_path: Path) -> None:
         encryption.read_identity(wrapped, "wrong")
 
 
+def test_check_recipients_accepts_a_usable_recipient() -> None:
+    _, recipient = encryption.generate_identity()
+    encryption.check_recipients([recipient])
+
+
+@pytest.mark.parametrize("recipients", [[], ["not-a-key-at-all"]])
+def test_check_recipients_refuses_what_encrypt_could_not_use(recipients: list[str]) -> None:
+    with pytest.raises(InvalidArgumentsError):
+        encryption.check_recipients(recipients)
+
+
+def test_check_recipients_names_the_missing_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, recipient = encryption.generate_identity()
+    monkeypatch.setitem(sys.modules, "pyrage", None)
+    with pytest.raises(MissingDependencyError) as info:
+        encryption.check_recipients([recipient])
+    assert info.value.extra == "encryption"
+
+
 def test_missing_extra_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "pyrage", None)
     with pytest.raises(MissingDependencyError) as info:

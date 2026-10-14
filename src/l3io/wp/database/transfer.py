@@ -28,7 +28,7 @@ from ._client import ClientTool
 from ._observe import VERDICT_KEY, operation
 from .connection import Connection
 from .credentials import CredentialSource, ResolvedCredentials
-from .errors import DatabaseUnreachableError, RefusedError, TransferError
+from .errors import DatabaseUnreachableError, InvalidArgumentsError, RefusedError, TransferError
 from .provision import _as_package_error, _preflight_resolved, _resolve_or_finding
 from .server import ServerInfo, detect_server
 from .verdict import Code, Finding, Verdict
@@ -179,8 +179,11 @@ class DumpStream:
         stderr = self._stderr.text(self._password)
         self._reader.close()
         if code != 0 or self._error is not None:
-            first = stderr.strip().splitlines()[0] if stderr.strip() else "no error output"
-            msg = f"dump failed: {self._tool.name} exited {code}: {first}"
+            if self._error is not None:
+                msg = f"dump failed: encryption: {self._error}"
+            else:
+                first = stderr.strip().splitlines()[0] if stderr.strip() else "no error output"
+                msg = f"dump failed: {self._tool.name} exited {code}: {first}"
             error = TransferError(msg, self._verdict, code, stderr)
             self._notify(error)
             raise error from self._error
@@ -341,13 +344,21 @@ def iter_dump(
             or plan.credentials is None
         ):
             raise RefusedError(plan.verdict)
-        process = _start(
-            plan.tool,
-            _client.dump_args(plan.tool, connection.database, options),
-            plan.credentials,
-            connection,
-            for_load=False,
-        )
+        if recipients is not None:
+            from . import encryption
+
+            encryption.check_recipients(recipients)
+        try:
+            process = _start(
+                plan.tool,
+                _client.dump_args(plan.tool, connection.database, options),
+                plan.credentials,
+                connection,
+                for_load=False,
+            )
+        except OSError as exc:
+            msg = f"could not start {plan.tool.path}: {exc.strerror or exc}"
+            raise TransferError(msg, plan.verdict, None, "") from exc
 
         def finish(error: BaseException | None, count: int) -> None:
             fields["bytes"] = count
@@ -369,20 +380,48 @@ def iter_dump(
     return stream
 
 
-def _write_atomically(stream: DumpStream, target: Path) -> None:
-    """Write a stream to ``target`` via a private temporary file renamed on success."""
-    partial = target.with_name(f".{target.name}.{uuid.uuid4().hex}.partial")
-    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+@dataclass(frozen=True, slots=True)
+class _Partial:
+    """A private temporary file beside ``target``, renamed onto it on success."""
+
+    target: Path
+    path: Path
+    file: IO[bytes]
+
+    def discard(self) -> None:
+        self.file.close()
+        self.path.unlink(missing_ok=True)
+
+
+def _open_partial(target: Path) -> _Partial:
+    path = target.with_name(f".{target.name}.{uuid.uuid4().hex}.partial")
     try:
-        with os.fdopen(fd, "wb") as out:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError as exc:
+        msg = f"cannot write the dump to {str(target)!r}: {exc.strerror}"
+        raise InvalidArgumentsError(msg) from exc
+    return _Partial(target, path, os.fdopen(fd, "wb"))
+
+
+def _write_failed(stream: DumpStream, where: str, exc: OSError) -> TransferError:
+    msg = f"writing the dump to {where} failed: {exc.strerror or exc}"
+    return TransferError(msg, stream._verdict, None, "")
+
+
+def _write_atomically(stream: DumpStream, partial: _Partial) -> None:
+    """Write a stream into ``partial`` and rename it onto its target on success."""
+    try:
+        with partial.file as out:
             for chunk in stream:
                 out.write(chunk)
             out.flush()
             os.fsync(out.fileno())
-        partial.replace(target)
-    except BaseException:
+        partial.path.replace(partial.target)
+    except BaseException as exc:
         stream.close()
-        partial.unlink(missing_ok=True)
+        partial.discard()
+        if isinstance(exc, OSError):
+            raise _write_failed(stream, repr(str(partial.target)), exc) from exc
         raise
 
 
@@ -395,13 +434,23 @@ def dump(
     options: Sequence[str] = (),
 ) -> TransferResult:
     """Dump to a writable binary stream, or atomically to a path (mode 0600)."""
-    stream = iter_dump(connection, credentials, recipients=recipients, options=options)
     if isinstance(to, (str, os.PathLike)):
-        _write_atomically(stream, Path(to))
+        partial = _open_partial(Path(to))
+        try:
+            stream = iter_dump(connection, credentials, recipients=recipients, options=options)
+        except BaseException:
+            partial.discard()
+            raise
+        _write_atomically(stream, partial)
     else:
+        stream = iter_dump(connection, credentials, recipients=recipients, options=options)
         with stream:
-            for chunk in stream:
-                to.write(chunk)
+            try:
+                for chunk in stream:
+                    to.write(chunk)
+            except OSError as exc:
+                stream.close()
+                raise _write_failed(stream, "the output stream", exc) from exc
     if stream.result is None:  # pragma: no cover - iteration always sets it or raises
         msg = "dump finished without a result"
         raise TransferError(msg, Verdict("dump"), None, "")

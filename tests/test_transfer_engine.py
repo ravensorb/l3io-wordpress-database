@@ -7,10 +7,14 @@ because the public operations need a live server for their preflight.
 
 from __future__ import annotations
 
+import dataclasses
+import errno
 import io
 import os
 import resource
 import signal
+import subprocess
+import sys
 import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -22,7 +26,12 @@ from structlog.testing import capture_logs
 from l3io.wp.database import _client, transfer
 from l3io.wp.database.connection import Connection
 from l3io.wp.database.credentials import Explicit, ResolvedCredentials
-from l3io.wp.database.errors import InvalidArgumentsError, RefusedError, TransferError
+from l3io.wp.database.errors import (
+    InvalidArgumentsError,
+    MissingDependencyError,
+    RefusedError,
+    TransferError,
+)
 from l3io.wp.database.server import parse_version
 from l3io.wp.database.verdict import Code, Finding, Verdict
 
@@ -30,6 +39,19 @@ CONN = Connection(host="127.0.0.1", database="wp_site", port=3306)
 SECRET = "engine-secret-password"
 CREDS = ResolvedCredentials("wpuser", SECRET)
 SERVER = parse_version("8.4.11")
+
+
+class _FailingWriter(io.BytesIO):
+    def __init__(self, error: OSError) -> None:
+        super().__init__()
+        self.error = error
+
+    def write(self, data: object) -> int:
+        raise self.error
+
+
+def _disk_full() -> OSError:
+    return OSError(errno.ENOSPC, "No space left on device")
 
 
 def fake(
@@ -161,7 +183,7 @@ def test_dump_to_a_path_is_atomic_and_private(
     good = fake(tmp_path, monkeypatch, "mysqldump", 'echo "SELECT 1;"\n')
     target = tmp_path / "out" / "site.sql"
     target.parent.mkdir()
-    transfer._write_atomically(stream(good), target)
+    transfer._write_atomically(stream(good), transfer._open_partial(target))
     assert target.read_bytes() == b"SELECT 1;\n"
     assert (target.stat().st_mode & 0o777) == 0o600
 
@@ -170,7 +192,7 @@ def test_a_failed_dump_leaves_no_file(tmp_path: Path, monkeypatch: pytest.Monkey
     bad = fake(tmp_path, monkeypatch, "mysqldump", 'echo "partial"; exit 2\n')
     target = tmp_path / "site.sql"
     with pytest.raises(TransferError):
-        transfer._write_atomically(stream(bad), target)
+        transfer._write_atomically(stream(bad), transfer._open_partial(target))
     assert list(tmp_path.glob("*site.sql*")) == []
 
 
@@ -197,6 +219,7 @@ def test_an_unusable_recipient_fails_instead_of_hanging(
     with pytest.raises(TransferError) as info:
         list(stream(tool, recipients=["not-a-key"]))
     assert isinstance(info.value.__cause__, InvalidArgumentsError)
+    assert str(info.value).startswith("dump failed: encryption: ")
 
 
 def _completions(logs: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -245,3 +268,115 @@ def test_a_refused_dump_ends_its_operation_and_starts_nothing(
     assert info.value.verdict == refused
     [event] = _completions(logs)
     assert event["outcome"] == "refused"
+
+
+def _planned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str
+) -> tuple[_client.ClientTool, Path]:
+    """A fake dump tool that leaves a marker file once it runs, planned as ready."""
+    marker = tmp_path / "tool-ran"
+    tool = fake(tmp_path, monkeypatch, "mysqldump", f': > "{marker}"\n{body}')
+    monkeypatch.setattr(
+        transfer, "_dump_plan", lambda *_: transfer._Plan(Verdict("dump"), CREDS, tool, SERVER)
+    )
+    return tool, marker
+
+
+def _recording_start(monkeypatch: pytest.MonkeyPatch) -> list[subprocess.Popen[bytes]]:
+    started: list[subprocess.Popen[bytes]] = []
+    real = transfer._start
+
+    def record(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        process = real(*args, **kwargs)
+        started.append(process)
+        return process
+
+    monkeypatch.setattr(transfer, "_start", record)
+    return started
+
+
+def test_a_path_in_a_missing_directory_starts_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, marker = _planned(tmp_path, monkeypatch, 'echo "SELECT 1;"\n')
+    target = tmp_path / "missing" / "site.sql"
+    with pytest.raises(InvalidArgumentsError) as info:
+        transfer.dump(CONN, Explicit("wpuser", SECRET), target)
+    assert str(target) in str(info.value)
+    assert isinstance(info.value.__cause__, FileNotFoundError)
+    time.sleep(0.2)
+    assert not marker.exists()
+
+
+def test_a_tool_that_cannot_start_is_a_transfer_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tool = fake(tmp_path, monkeypatch, "mysqldump", 'echo "SELECT 1;"\n')
+    gone = dataclasses.replace(tool, path=str(tmp_path / "removed-after-discovery"))
+    monkeypatch.setattr(
+        transfer, "_dump_plan", lambda *_: transfer._Plan(Verdict("dump"), CREDS, gone, SERVER)
+    )
+    with capture_logs() as logs, pytest.raises(TransferError) as info:
+        transfer.iter_dump(CONN, Explicit("wpuser", SECRET))
+    assert isinstance(info.value.__cause__, FileNotFoundError)
+    [event] = _completions(logs)
+    assert event["outcome"] == "failed"
+
+
+def test_a_failing_stream_target_is_a_transfer_error_and_reaps_the_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _planned(tmp_path, monkeypatch, "while true; do echo 'INSERT INTO t VALUES (1);'; done\n")
+    started = _recording_start(monkeypatch)
+    with pytest.raises(TransferError) as info:
+        transfer.dump(CONN, Explicit("wpuser", SECRET), _FailingWriter(_disk_full()))
+    assert isinstance(info.value.__cause__, OSError)
+    assert info.value.__cause__.errno == errno.ENOSPC
+    [process] = started
+    assert process.returncode is not None
+    with pytest.raises(ProcessLookupError):
+        os.kill(process.pid, 0)
+
+
+def test_a_failing_path_target_is_a_transfer_error_and_leaves_no_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _planned(tmp_path, monkeypatch, 'echo "SELECT 1;"\n')
+    started = _recording_start(monkeypatch)
+    out = tmp_path / "out"
+    out.mkdir()
+
+    def full(fd: int) -> None:
+        raise _disk_full()
+
+    monkeypatch.setattr(os, "fsync", full)
+    with pytest.raises(TransferError) as info:
+        transfer.dump(CONN, Explicit("wpuser", SECRET), out / "site.sql")
+    assert isinstance(info.value.__cause__, OSError)
+    assert info.value.__cause__.errno == errno.ENOSPC
+    assert list(out.iterdir()) == []
+    [process] = started
+    assert process.returncode is not None
+
+
+def test_a_bad_recipient_is_refused_before_the_tool_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("pyrage")
+    _, marker = _planned(tmp_path, monkeypatch, 'echo "SELECT 1;"\n')
+    with pytest.raises(InvalidArgumentsError):
+        transfer.iter_dump(CONN, Explicit("wpuser", SECRET), recipients=["not-a-key"])
+    time.sleep(0.2)
+    assert not marker.exists()
+
+
+def test_a_missing_encryption_extra_is_named_before_the_tool_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, marker = _planned(tmp_path, monkeypatch, 'echo "SELECT 1;"\n')
+    monkeypatch.setitem(sys.modules, "pyrage", None)
+    with pytest.raises(MissingDependencyError) as info:
+        transfer.iter_dump(CONN, Explicit("wpuser", SECRET), recipients=["age1whatever"])
+    assert info.value.extra == "encryption"
+    time.sleep(0.2)
+    assert not marker.exists()

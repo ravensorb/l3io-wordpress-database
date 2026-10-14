@@ -89,6 +89,11 @@ def _identities(pyrage: Any, identities: Sequence[str]) -> list[Any]:
     return parsed
 
 
+def check_recipients(recipients: Sequence[str]) -> None:
+    """Refuse recipients :func:`encrypt` could not use, before any data moves."""
+    _recipients(_pyrage(), recipients)
+
+
 def encrypt(reader: IO[bytes], writer: IO[bytes], recipients: Sequence[str]) -> None:
     """Stream ``reader`` into ``writer`` as age, for every recipient."""
     pyrage = _pyrage()

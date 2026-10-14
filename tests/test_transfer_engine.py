@@ -298,6 +298,38 @@ def _recording_start(monkeypatch: pytest.MonkeyPatch) -> list[subprocess.Popen[b
     return started
 
 
+@pytest.mark.parametrize("text_mode", ["stringio", "file"])
+def test_a_text_target_is_refused_before_a_dump_begins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text_mode: str
+) -> None:
+    monkeypatch.setattr(transfer, "iter_dump", lambda *_, **__: pytest.fail("began a dump"))
+    with ExitStack() as cleanup:
+        target: Any = (
+            io.StringIO()
+            if text_mode == "stringio"
+            else cleanup.enter_context(open(tmp_path / "out.sql", "w"))  # noqa: PTH123
+        )
+        with pytest.raises(InvalidArgumentsError, match="binary stream"):
+            transfer.dump(CONN, Explicit("wpuser", SECRET), target)
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        (io.StringIO("-- MySQL dump\n"), "binary stream"),
+        (iter(["-- MySQL dump\n"]), "must yield bytes, not str"),
+    ],
+    ids=["text-stream", "iterable-of-str"],
+)
+def test_a_text_source_is_refused_before_a_load_begins(
+    monkeypatch: pytest.MonkeyPatch, source: Any, message: str
+) -> None:
+    monkeypatch.setattr(transfer, "_load_plan", lambda *_, **__: pytest.fail("planned a load"))
+    monkeypatch.setattr(transfer, "_start", lambda *_, **__: pytest.fail("started a load"))
+    with pytest.raises(InvalidArgumentsError, match=message):
+        transfer.load(CONN, Explicit("wpuser", SECRET), source)
+
+
 def test_a_path_in_a_missing_directory_starts_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -432,8 +464,45 @@ def test_a_missing_encryption_extra_is_named_before_the_tool_starts(
             ServerFamily.MARIADB,
             True,
         ),
+        (
+            b"-- MySQL dump 10.13  Distrib 8.4.11, for Linux (x86_64)\n--\n"
+            b"-- Host: 127.0.0.1    Database: d\n"
+            b"-- ------------------------------------------------------\n"
+            b"-- Server version\t8.4.11\n\n",
+            ServerFamily.MYSQL,
+            False,
+        ),
+        (
+            b"-- MySQL dump 10.13  Distrib 8.4.11, for Linux (x86_64)\n--\n"
+            b"-- Host: 127.0.0.1    Database: d\n"
+            b"-- ------------------------------------------------------\n"
+            b"-- Server version\t11.4.13-MariaDB-ubu2404\n\n",
+            ServerFamily.MARIADB,
+            False,
+        ),
+        (
+            b"/*M!999999\\- enable the sandbox mode */ \n"
+            b"-- MariaDB dump 10.19-11.4.13-MariaDB, for debian-linux-gnu (x86_64)\n--\n"
+            b"-- Host: 127.0.0.1    Database: d\n"
+            b"-- ------------------------------------------------------\n"
+            b"-- Server version\t8.4.11\n\n",
+            ServerFamily.MYSQL,
+            True,
+        ),
+        (b"-- Server version\t11.4.13-MariaDB\nCREATE TABLE t (x INT);\n", None, False),
         (b"CREATE TABLE t (x INT);\n", None, False),
         (b"", None, False),
+    ],
+    ids=[
+        "mysql-banner",
+        "old-mariadb-banner",
+        "mariadb-banner-sandboxed",
+        "mysql-tool-mysql-server",
+        "mysql-tool-mariadb-server",
+        "mariadb-tool-mysql-server",
+        "server-line-without-banner",
+        "not-a-dump",
+        "empty",
     ],
 )
 def test_header_detection(head: bytes, family: ServerFamily | None, sandboxed: bool) -> None:

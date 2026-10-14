@@ -244,9 +244,19 @@ def test_check_transfer_needs_no_admin_account(
 
     monkeypatch.setattr(cli, "check_dump", lambda *a, **k: Verdict("dump"))
     monkeypatch.setattr(cli, "check_load", fake_check_load)
-    assert cli.main(["check", "dump", *SITE, *WP, "--output", "-"]) == cli.Exit.OK
+    assert cli.main(["check", "dump", *SITE, *WP]) == cli.Exit.OK
     assert json.loads(capsys.readouterr().out)["operation"] == "dump"
     assert cli.main(["check", "load", *SITE, *WP, "--input", "-"]) == cli.Exit.OK
     assert json.loads(capsys.readouterr().out)["operation"] == "load"
     assert seen["credentials"].username == "wpuser"
     assert seen["source"] is None
+
+
+@pytest.mark.parametrize("extra", [["--output", "-"], ["--recipient", "garbage"]])
+def test_check_dump_rejects_options_it_would_ignore(
+    monkeypatch: pytest.MonkeyPatch, extra: list[str]
+) -> None:
+    monkeypatch.setattr(cli, "check_dump", lambda *a, **k: pytest.fail("ran the check"))
+    with pytest.raises(SystemExit) as info:
+        cli.main(["check", "dump", *SITE, *WP, *extra])
+    assert info.value.code == cli.Exit.USAGE

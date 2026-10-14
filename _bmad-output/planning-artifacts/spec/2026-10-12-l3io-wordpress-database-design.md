@@ -338,9 +338,12 @@ tool; for a dump, the bytes produced, counted after encryption when there is any
    --database=<target>` and the dump on stdin. It first reads the source's first
    64 KiB, decrypting them when the source is `age`-encrypted and identities are
    given, and compares the first lines against fixed strings only; no SQL is
-   parsed. The `age` header without identities is `IDENTITY_REQUIRED`. A
-   `-- MariaDB dump` or `-- MySQL dump` header naming the other family is
-   `CROSS_FAMILY_DUMP`. MariaDB's sandbox line as the first line is
+   parsed. The `age` header without identities is `IDENTITY_REQUIRED`. A dump
+   from the other family is `CROSS_FAMILY_DUMP`. The family is the source
+   server's: a `-- Server version` line among the first lines decides it
+   (MariaDB versions contain `MariaDB`), because MySQL's tool can dump a MariaDB
+   server; without that line, the `-- MariaDB dump` or `-- MySQL dump` banner
+   decides it. MariaDB's sandbox line as the first line is
    `INCOMPATIBLE_DUMP_SOURCE` when the client tool cannot read it (MySQL clients
    read it as a comment; MariaDB clients read it from the release in each series
    that added it); `allow_unsandboxed=True` strips that one line and nothing else.
@@ -406,7 +409,8 @@ The `l3io-wordpress-database` command has one subcommand per operation (`survey`
   section 7.3 applies.
 - `--log-level` (default `INFO`) and `--log-format console|json`, consistent with
   backup.
-- Results are printed as JSON on stdout; errors go to stderr.
+- Results are printed as JSON on stdout; errors go to stderr. The exception is
+  `dump --output -`: the dump itself is on stdout, so its result goes to stderr.
 - Distinct exit codes per outcome class, part of the CLI contract: `0` success, `1`
   operation failed, `2` usage, `3` refused (a blocker), `4` credentials, `5`
   unreachable, `7` not ready (`inspect` found the account cannot use the database).

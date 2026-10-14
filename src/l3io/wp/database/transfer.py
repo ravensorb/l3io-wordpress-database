@@ -436,6 +436,9 @@ def dump(
     options: Sequence[str] = (),
 ) -> TransferResult:
     """Dump to a writable binary stream, or atomically to a path (mode 0600)."""
+    if isinstance(to, io.TextIOBase):
+        msg = "dump writes bytes: pass a binary stream (sys.stdout.buffer, a file opened 'wb')"
+        raise InvalidArgumentsError(msg)
     if isinstance(to, (str, os.PathLike)):
         partial = _open_partial(Path(to))
         try:
@@ -475,22 +478,34 @@ class _Header:
     needs_identity: bool = False
 
 
+#: Written by both families' tools a few lines below their banner, naming the source server.
+SERVER_VERSION_LINE = b"-- Server version\t"
+
+
+def _family_of(line: bytes) -> ServerFamily:
+    return ServerFamily.MARIADB if b"MariaDB" in line else ServerFamily.MYSQL
+
+
 def _header(plain_head: bytes | None, *, encrypted: bool) -> _Header:
     if not plain_head:
         return _Header(encrypted, None, False)
-    lines = plain_head.split(b"\n", 3)[:3]
+    lines = plain_head.split(b"\n", 8)[:8]
     sandboxed = lines[0].startswith(SANDBOX_LINE)
-    family: ServerFamily | None = None
+    banner: ServerFamily | None = None
+    server: ServerFamily | None = None
     for line in lines:
-        if line.startswith(b"-- MariaDB dump") or (
-            line.startswith(b"-- MySQL dump") and b"MariaDB" in line
-        ):
-            family = ServerFamily.MARIADB
+        if banner is None and line.startswith((b"-- MariaDB dump", b"-- MySQL dump")):
+            banner = _family_of(line)
+        elif banner is not None and line.startswith(SERVER_VERSION_LINE):
+            # Either family's tool can dump the other's server; the server decides.
+            server = _family_of(line)
             break
-        if line.startswith(b"-- MySQL dump"):
-            family = ServerFamily.MYSQL
-            break
-    return _Header(encrypted, family, sandboxed)
+    return _Header(encrypted, server or banner, sandboxed)
+
+
+def _not_bytes(block: object) -> InvalidArgumentsError:
+    kind = type(block).__name__
+    return InvalidArgumentsError(f"the dump source must yield bytes, not {kind}")
 
 
 class _IterReader(io.RawIOBase):
@@ -505,9 +520,13 @@ class _IterReader(io.RawIOBase):
     def readinto(self, buffer: Any) -> int:
         while not self._pending:
             try:
-                self._pending = memoryview(next(self._chunks))
+                chunk = next(self._chunks)
             except StopIteration:
                 return 0
+            try:
+                self._pending = memoryview(chunk)
+            except TypeError as exc:
+                raise _not_bytes(chunk) from exc
         size = min(len(buffer), len(self._pending))
         buffer[:size] = self._pending[:size]
         self._pending = self._pending[size:]
@@ -641,6 +660,9 @@ def _open_source(
             msg = f"cannot read the dump source {os.fspath(source)!r}: {exc.strerror or exc}"
             raise InvalidArgumentsError(msg) from exc
         return cleanup.enter_context(file)
+    if isinstance(source, io.TextIOBase):
+        msg = "load reads bytes: pass a binary stream (sys.stdin.buffer, a file opened 'rb')"
+        raise InvalidArgumentsError(msg)
     if hasattr(source, "read"):
         return source  # type: ignore[return-value]
     return _as_reader(source)
@@ -653,6 +675,8 @@ def _read_head(reader: IO[bytes]) -> bytes:
         block = reader.read(CHUNK - len(head))
         if not block:
             break
+        if not isinstance(block, (bytes, bytearray, memoryview)):
+            raise _not_bytes(block)
         head += block
     return head
 

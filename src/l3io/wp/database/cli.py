@@ -72,7 +72,9 @@ _CHECKABLE = ["ensure", "rotate-password", "revoke", "drop-user", "drop-database
 _TRANSFER = {"dump", "load"}
 
 
-def _add_operation_options(p: argparse.ArgumentParser, operation: str) -> None:
+def _add_operation_options(
+    p: argparse.ArgumentParser, operation: str, *, check: bool = False
+) -> None:
     site = p.add_argument_group("site")
     site.add_argument("--wp-config", help="path to wp-config.php (needs the 'wpconfig' extra)")
     site.add_argument("--db-host", help="database host, optionally host:port")
@@ -104,13 +106,15 @@ def _add_operation_options(p: argparse.ArgumentParser, operation: str) -> None:
             "--table-prefix", help="WordPress $table_prefix (default: from wp-config, else wp_)"
         )
     if operation == "dump":
-        p.add_argument("--output", required=True, help="file to write, or - for stdout")
-        p.add_argument(
-            "--recipient",
-            action="append",
-            default=[],
-            help="age or SSH public key (repeatable)",
-        )
+        # A check writes and encrypts nothing, so it takes neither option.
+        if not check:
+            p.add_argument("--output", required=True, help="file to write, or - for stdout")
+            p.add_argument(
+                "--recipient",
+                action="append",
+                default=[],
+                help="age or SSH public key (repeatable)",
+            )
         p.add_argument(
             "--option",
             action="append",
@@ -160,7 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
     check = sub.add_parser("check", help="run an operation's check only")
     check_sub = check.add_subparsers(dest="checked", required=True)
     for name in _CHECKABLE:
-        _add_operation_options(check_sub.add_parser(name), name)
+        _add_operation_options(check_sub.add_parser(name), name, check=True)
     return parser
 
 

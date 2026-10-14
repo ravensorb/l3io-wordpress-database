@@ -123,7 +123,7 @@ jobs:
         # happens before any job starts. On GitHub each leg has its own runner.
         python: >-
           ${{ vars.LOCAL_ACT && fromJSON('["3.11"]')
-              || fromJSON('["3.11","3.12","3.13"]') }}
+              || fromJSON('["3.11","3.12","3.13","3.14"]') }}
         # The engine carries its own image and health probe as one object, so
         # there is no `include:` block. An include entry whose keys do not match
         # an existing combination ADDS a leg rather than extending one, which
@@ -289,7 +289,7 @@ jobs:
       matrix:
         python: >-
           ${{ vars.LOCAL_ACT && fromJSON('["3.11"]')
-              || fromJSON('["3.11","3.12","3.13"]') }}
+              || fromJSON('["3.11","3.12","3.13","3.14"]') }}
     env:
       UV_PROJECT_ENVIRONMENT: /tmp/l3io-venv-verify-${{ matrix.python }}
       # Outside the working tree, as in the build job. Inside it, a wheel left

@@ -169,7 +169,7 @@ Each `Code` has exactly one severity. Every result type carries the `Verdict` it
 check produced, so warnings reach the caller on success. `RefusedError` carries it
 on refusal. Warnings are also logged, once, at WARNING level.
 
-Initial catalogue:
+Catalogue:
 
 | Code | Severity | Raised when |
 |---|---|---|
@@ -178,8 +178,7 @@ Initial catalogue:
 | `AUTHENTICATION_FAILED` | blocker | the supplied account was rejected (for an admin operation, the admin) |
 | `SERVER_UNSUPPORTED` | blocker | below MySQL 8.0 or MariaDB 10.2 |
 | `MISSING_PRIVILEGE` | blocker | the account lacks a privilege the operation needs; `fields.privilege` names it |
-| `CLIENT_TOOL_MISSING` | blocker | no suitable `mysqldump`/`mariadb-dump`/`mysql`/`mariadb` on `PATH` |
-| `CLIENT_TOO_OLD` | blocker | the client tool is below the version the server requires |
+| `CLIENT_TOOL_MISSING` | blocker | no suitable `mysqldump`/`mariadb-dump`/`mysql`/`mariadb` on `PATH`; `fields.tools` names those tried |
 | `PLATFORM_UNSUPPORTED` | blocker | a transfer was requested where `/dev/fd` does not exist (Windows) |
 | `MISSING_DEPENDENCY` | blocker | an operation needs an extra that is not installed; `fields.extra` names it |
 | `OPTION_NOT_ALLOWED` | blocker | a caller-supplied client option is outside the allow-list |
@@ -187,16 +186,18 @@ Initial catalogue:
 | `DATABASE_NOT_EMPTY` | blocker | `load` into a database holding tables, without `replace=` naming it |
 | `USER_ABSENT` | blocker | the operation needs an existing account |
 | `CONFIRMATION_MISMATCH` | blocker | `confirm=` or `replace=` does not equal the target |
-| `INCOMPATIBLE_DUMP_SOURCE` | blocker | a dump cannot load into this server family as it stands (subject to V1) |
+| `INCOMPATIBLE_DUMP_SOURCE` | blocker | the load source begins with MariaDB's sandbox line and the client tool cannot read it; `allow_unsandboxed=True` strips that one line |
+| `IDENTITY_REQUIRED` | blocker | the load source is `age`-encrypted and no `identities` were given |
 | `LIVE_WORDPRESS_SITE` | warning | a destructive target has a WordPress options table and schema version |
-| `CLIENT_SERVER_SKEW` | warning | the client tool's family or major version differs from the server's |
+| `CLIENT_SERVER_SKEW` | warning | the client tool belongs to the other server family, or its major.minor version is older than the server's |
+| `STORED_OBJECTS_PRESENT` | warning | the database being dumped has views or triggers: they carry `DEFINER` clauses that loading needs privilege for, and MariaDB keeps their original text, which may name this schema |
+| `CROSS_FAMILY_DUMP` | warning | the load source comes from the other server family, whose collations may not exist on the target |
 | `END_OF_LIFE_SERVER` | warning | the server version is past upstream end of life (MySQL 8.0, MariaDB 10.2) |
 | `PRIVILEGES_UNVERIFIED` | warning | the administrator holds an active role, whose privileges `information_schema` does not show, so privilege checks were skipped and the operation is attempted |
 | `PASSWORD_UNVERIFIED` | warning | `ensure` ran for an account whose `user_host` does not match this machine, so it did not judge or set an existing password by logging in, and did not verify the result |
 
-Codes are added by the plan that first emits them; the transfer codes above arrive with
-export and import. A test requires every code to be documented in the enum and every
-code to be emitted by at least one test.
+A test requires every code to be documented in the enum and every code to be
+emitted by at least one test.
 
 ## 7. Operations
 
@@ -262,50 +263,97 @@ Grants are always scoped to `database.*`, never global.
 
 - **`dump(conn, credentials, to, *, recipients=None, options=()) -> TransferResult`**:
   `to` is a writable binary stream or a path. A path is written under a temporary
-  name in the same directory and renamed into place only on success, so a failed
-  dump never leaves a plausible-looking file behind.
+  name in the same directory (mode `0600`) and renamed into place only on success,
+  so a failed dump never leaves a plausible-looking file behind. The temporary file
+  is opened before the client tool starts, so an unusable target is refused with
+  `InvalidArgumentsError` and starts nothing. A stream target is flushed before
+  `dump` returns, so a final chunk the stream fails to write fails the dump.
 - **`iter_dump(conn, credentials, *, recipients=None, options=()) -> DumpStream`**:
   iterate `DumpStream` for byte chunks. If the tool fails, the iteration **raises
   `TransferError` at the end instead of stopping normally**, so a truncated dump
-  cannot be mistaken for a whole one. Closing the stream early terminates the
+  cannot be mistaken for a whole one. Closing the stream early kills and reaps the
   subprocess. After exhaustion, `.result` holds the `TransferResult`.
-- **`load(conn, credentials, source, *, replace=None, identities=None, options=()) -> TransferResult`**:
+- **`load(conn, credentials, source, *, replace=None, identities=None, options=(), allow_unsandboxed=False) -> TransferResult`**:
   `source` is a path, a readable binary stream, or an iterable of byte chunks.
   Loading into a database holding tables requires `replace=conn.database`.
+  `replace=` is a confirmation gate only: the package does not drop or empty the
+  target. The dump's own `DROP TABLE IF EXISTS` statements replace the tables it
+  contains; tables in the target that the dump does not contain remain.
+- **`check_dump(conn, credentials, *, options=())`** and
+  **`check_load(conn, credentials, *, source=None, replace=None, identities=None, options=(), allow_unsandboxed=False)`**
+  return the `Verdict` the operation would act on. `check_load` evaluates the
+  source's header only when `source` is a path, because a stream or an iterable
+  cannot be read twice; `load` always evaluates it.
 
 `dump` and `iter_dump` share one engine. `TransferResult` carries `bytes`,
-`duration_ms`, `tool` (name and version), `server` and the `Verdict`.
+`duration_ms`, `tool` (name and version), `server` and the `Verdict`. `bytes` counts
+what the transfer moved: for a load, the plaintext bytes delivered to the client
+tool; for a dump, the bytes produced, counted after encryption when there is any.
 
 **Engine.**
 
 1. The check resolves the server family and version, selects the client tool
    (`mariadb-dump`/`mariadb` for MariaDB, falling back to `mysqldump`/`mysql`;
-   `mysqldump`/`mysql` for MySQL), reads its version, and verifies privileges.
-   Dump needs `SELECT`, `SHOW VIEW`, `TRIGGER` and `LOCK TABLES`. Load needs `CREATE`,
-   `INSERT`, `ALTER`, `DROP`, `INDEX`, `REFERENCES` and `CREATE VIEW` on the target.
+   `mysqldump`/`mysql` for MySQL, falling back to the MariaDB tools, which
+   `CLIENT_SERVER_SKEW` then reports), reads its version, and verifies privileges.
+   Dump needs `SELECT`, `SHOW VIEW` and `TRIGGER`; it needs no `LOCK TABLES`,
+   because `--single-transaction` takes no locks. Load needs `CREATE`, `INSERT`,
+   `ALTER`, `DROP`, `INDEX`, `REFERENCES` and `CREATE VIEW` on the target.
 2. **Credentials go through an anonymous pipe.** The `[client]` options (user,
-   password, host, port) are written to `os.pipe()`. The read end is passed to the
-   child with `pass_fds` and named as `--defaults-file=/dev/fd/N`, as the first
-   argument. Nothing is written to disk, and the child's argument vector and
-   environment hold no password. A `--defaults-file` replaces the option-file search,
-   so a hostile `~/.my.cnf` is ignored (verified on MySQL 8.4 and MariaDB 11.4).
-   MySQL clients still read `~/.mylogin.cnf` even then, so the package suppresses it:
-   `--no-login-paths` on MySQL 8.4 and later, and `MYSQL_TEST_LOGIN_FILE` set to a
-   nonexistent path on MySQL 8.0, which does not know that option. MariaDB has no
-   login-path file. Option values are escaped for option-file syntax.
-   `--defaults-extra-file` and `MYSQL_PWD` are never used.
-3. **Dump defaults:** `--single-transaction --quick --hex-blob
+   password, host, port, and `protocol=TCP`) are written to `os.pipe()`. The read
+   end is passed to the child with `pass_fds` and named as
+   `--defaults-file=/dev/fd/N`, as the first argument. Nothing is written to disk,
+   and the child's argument vector and environment hold no password. `protocol=TCP`
+   makes `localhost` mean the same server to the client tool as to PyMySQL, instead
+   of a Unix socket. A `--defaults-file` replaces the option-file search, so a
+   hostile `~/.my.cnf` is ignored. MySQL clients still read `~/.mylogin.cnf` even
+   then, so the package suppresses it: `MYSQL_TEST_LOGIN_FILE` names a nonexistent
+   path for every client, which MySQL 8.0 honours, and MySQL 8.4 and later also get
+   `--no-login-paths`. MariaDB has no login-path file. `--defaults-extra-file` and
+   `MYSQL_PWD` are never used.
+3. **Option values** are wrapped in `"…"` with `\`, `"` and newline
+   backslash-escaped; a NUL is refused. MariaDB's option reader splits a line longer
+   than its buffer into two, which would let a long value inject an option, so a
+   connection value (user, password or host) whose escaped form exceeds 1024 UTF-8
+   bytes, or that is not valid UTF-8, is refused with `InvalidArgumentsError` before
+   any program starts. No message names the value.
+4. **The child's environment** is `PATH`, `LANG`, `LC_ALL` and
+   `MYSQL_TEST_LOGIN_FILE`, and nothing else. No inherited `HOME`, `MYSQL_PWD`,
+   `MYSQL_HOST` or `MYSQL_TCP_PORT` can authenticate or redirect it.
+5. **Dump defaults:** `--single-transaction --quick --hex-blob
    --default-character-set=utf8mb4 --no-tablespaces`, plus `--set-gtid-purged=OFF` on
    MySQL, and the database name as a positional argument (not `--databases`). The
    output therefore contains no `CREATE DATABASE` or `USE`, so it loads into a
    database of any name, which is what a staging restore needs. Callers may add
    options from an allow-list (for example `--routines`, `--events`,
    `--ignore-table`). Any option touching credentials, option files, hosts or output
-   files is refused with `OPTION_NOT_ALLOWED`.
-4. **Load** runs the client tool with `--database=<target>` and the dump on stdin.
-5. stdout (dump) or stdin (load) is pumped in chunks. stderr is captured up to a size
-   cap and redacted. On a non-zero exit, `TransferError` carries the `Verdict`, the
-   exit code and the redacted stderr.
+   files is refused with `OPTION_NOT_ALLOWED`. The dump check reports
+   `STORED_OBJECTS_PRESENT` when the database has views or triggers.
+6. **Load** runs the client tool with `--default-character-set=utf8mb4
+   --database=<target>` and the dump on stdin. It first reads the source's first
+   64 KiB, decrypting them when the source is `age`-encrypted and identities are
+   given, and compares the first lines against fixed strings only; no SQL is
+   parsed. The `age` header without identities is `IDENTITY_REQUIRED`. A
+   `-- MariaDB dump` or `-- MySQL dump` header naming the other family is
+   `CROSS_FAMILY_DUMP`. MariaDB's sandbox line as the first line is
+   `INCOMPATIBLE_DUMP_SOURCE` when the client tool cannot read it (MySQL clients read it as a comment; MariaDB clients read it from
+   the release in each series that added it); `allow_unsandboxed=True` strips that
+   one line and nothing else.
+7. **Damage is found mid-stream.** A corrupt or truncated source is discovered
+   after the statements before the damage have run, so a caller loads into a
+   staging database and switches to it only after the load succeeds, as backup
+   does.
+8. **Order of failures.** Recipients are validated, and a missing `encryption`
+   extra is reported, before the dump program starts. A path source or target that
+   cannot be opened, or a source whose head cannot be read, is refused with
+   `InvalidArgumentsError` before any program starts. A read or write failure of
+   the caller's own source or target once the transfer runs raises `TransferError`.
+9. stdout (dump) or stdin (load) is pumped in chunks. stderr is drained on its own
+   thread, so a tool writing more stderr than a pipe holds cannot deadlock, and is
+   kept up to 64 KiB with the password redacted. On a non-zero exit, `TransferError`
+   carries the `Verdict`, the exit code and the redacted stderr. When feeding a load
+   fails for any reason, the client tool is killed rather than its input closed,
+   so a partial statement never runs.
 
 **Encryption** is optional (extra `encryption`, `pyrage`). `recipients` takes age or
 SSH public keys; the dump stream is encrypted in the standard `age` format on its
@@ -314,6 +362,8 @@ passphrase-protected, using age's passphrase mode on the small identity file.
 `generate_identity()` returns a new identity and its public key. Because the format
 is standard `age`, any output can be decrypted by the stock `age` command line. This
 is the family's single encryption format; backup uses the same one for its archives.
+An identity that matches no recipient raises `DecryptionError` before anything is
+loaded. A truncated or damaged `age` stream raises `CorruptDumpError`.
 
 ## 8. Observability
 
@@ -345,6 +395,9 @@ The `l3io-wordpress-database` command has one subcommand per operation (`survey`
   terminal. An argument vector is visible to every user on the machine.
 - Destructive subcommands require `--confirm NAME`; `load` into a non-empty database
   requires `--replace NAME`.
+- Extra client options are passed as `--option=--name[=value]`, joined with `=` so
+  the parser does not read the client option as its own; the allow-list of
+  section 7.3 applies.
 - `--log-level` (default `INFO`) and `--log-format console|json`, consistent with
   backup.
 - Results are printed as JSON on stdout; errors go to stderr.
@@ -367,7 +420,8 @@ each is wrapped with `raise ... from` (AD-14).
 | `ProvisioningError` | a provisioning operation started and failed; carries the statements completed |
 | `DatabaseUnreachableError`, `AuthenticationFailedError`, `AccessDeniedError` | raised by the read operations `survey` and `schema_version`, which have no check form, and by a server error mid-operation |
 | `TransferError(verdict, exit_code, stderr)` | a dump or load started and failed; stderr is redacted |
-| `DecryptionError` | wrong identity, kept distinct from a corrupt or truncated stream |
+| `DecryptionError` | none of the supplied identities can decrypt the source (a wrong identity) |
+| `CorruptDumpError` | an encrypted source is truncated or damaged; kept distinct from `DecryptionError`, because the remedy differs |
 
 ## 11. Compatibility
 
@@ -428,8 +482,11 @@ each is wrapped with `raise ... from` (AD-14).
 - `inspect`'s six states;
 - `schema_version` with a custom prefix.
 
-**Transfer tests use the client tools from the server's own image**, run as the job
-container, so the client and server versions match what an operator has.
+**Transfer tests use the client tools from the server's own image**, so the client
+and server versions match what an operator has. `make test-transfer ENGINE=<image>`
+starts the server from the image and runs the transfer tests in a second container
+of the same image, with Python installed by `uv`. CI job `transfer` runs that
+command once per engine, and a developer runs the same command locally.
 
 **Secret checks:**
 - during a dump and a load, the child's `/proc/<pid>/cmdline` and `/proc/<pid>/environ`
@@ -514,25 +571,44 @@ it before 0.1.0.
 
 Each item is settled by a test or a probe before its dependent code is written.
 
-- **V1** Whether MariaDB's dump tool writes a first line MySQL's client rejects, and on
-  which versions. If so, `INCOMPATIBLE_DUMP_SOURCE` plus an option to strip that line.
-- **V2** `MYSQL_TEST_LOGIN_FILE` suppression on MySQL 8.0, with a login file planted by
-  `mysql_config_editor`.
-- **V3** A job container built from each server image, with Python installed by `uv`,
-  runs on GitHub Actions and under act.
-- **V4** `pyrage` distinguishes a wrong identity from a corrupt stream well enough for
-  `DecryptionError` to be distinct.
-- **V5** Option-file value escaping rules for both client families.
+- **V1 — settled 2026-10-13.** MariaDB 11.4 dumps begin
+  `/*M!999999\- enable the sandbox mode */`. MySQL clients accept it as a comment;
+  MariaDB 10.2's client rejects it (`Unknown command '\-'`), hence
+  `INCOMPATIBLE_DUMP_SOURCE` and `allow_unsandboxed`. Cross-family loads fail on
+  collations: MariaDB 11.4 to MySQL 8.4 with `Unknown collation
+  utf8mb4_uca1400_ai_ci`, MySQL 8.4 to MariaDB 10.2 with `Unknown collation
+  utf8mb4_0900_ai_ci`; MySQL 8.4 to MariaDB 11.4 works. Hence `CROSS_FAMILY_DUMP`.
+- **V2 — settled 2026-10-13.** `~/.mylogin.cnf` overrides `--defaults-file`: a planted
+  login path changed the login to its own user. `MYSQL_TEST_LOGIN_FILE` set to a
+  nonexistent path suppresses it on MySQL 8.0; `--no-login-paths` does on 8.4 and 9.7.
+- **V3 — settled 2026-10-13.** The suite runs inside each server image (MySQL 8.0,
+  8.4 and 9.7, MariaDB 10.2 and 11.4) after installing `git` and `uv` 0.11.6 with
+  `UV_PYTHON=3.11`, with the image's own client tools on `PATH`. `make test-transfer`
+  is the one command CI, act and a developer run.
+- **V4 — settled 2026-10-13.** `pyrage` 1.4 reports a wrong identity as
+  `DecryptError('No matching keys found')`, a truncated or corrupted body as a bare
+  `OSError('decryption error')`, and a corrupted header or a non-`age` input as
+  `DecryptError` with other text. That separates `DecryptionError` from
+  `CorruptDumpError`. Encryption streams: 512 MiB encrypts with an 11 MiB peak RSS.
+- **V5 — settled 2026-10-13.** Option-file values wrapped in `"…"`, with `\` and `"`
+  backslash-escaped, reach the server intact on all five engines for `#`, `;`, `'`,
+  `"`, `\`, leading and trailing spaces, `ab);cd`, `=` and `[`.
 - **V6 — settled 2026-10-12.** `information_schema.USER_PRIVILEGES` and
   `SCHEMA_PRIVILEGES` answer privilege questions on MySQL 8.0/8.4/9.7 and MariaDB
   10.2/11.4. `SCHEMA_PRIVILEGES.TABLE_SCHEMA` stores the escaped grant pattern (`wp\_x`),
   so `%s LIKE TABLE_SCHEMA` reproduces the server's match. Privileges held through an
   active role are not listed, hence `PRIVILEGES_UNVERIFIED`. `CURRENT_ROLE()` is `NONE`
   (MySQL) or `NULL` (MariaDB) when no role is active.
-- **V7** Every dump default is accepted by every client in the matrix
-  (`--set-gtid-purged` is MySQL-only; `--no-tablespaces` on MariaDB).
-- **V8** Reading a child's `/proc/<pid>/environ` and `cmdline` from the test process
-  on CI runners.
+- **V7 — settled 2026-10-13.** `--single-transaction --quick --hex-blob
+  --default-character-set=utf8mb4 --no-tablespaces`, plus `--set-gtid-purged=OFF` with
+  MySQL tools, is accepted by every client in the matrix. The dumps contain no
+  `CREATE DATABASE` or `USE` and load into a differently named database with equal
+  table checksums; MySQL strips same-schema qualifiers from views. MariaDB stores a
+  trigger's original statement text, so a trigger created with a schema-qualified
+  name is dumped qualified, hence `STORED_OBJECTS_PRESENT`.
+- **V8 — settled 2026-10-13.** A test process can read a child's `/proc/<pid>/cmdline`
+  and `/proc/<pid>/environ`, and a pipe passed with `pass_fds` is readable by the
+  child as `/dev/fd/N`.
 
 ## 17. Success criteria
 

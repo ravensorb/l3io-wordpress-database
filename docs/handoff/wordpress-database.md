@@ -318,3 +318,62 @@ Branch is local, not pushed; local branch `legacy/main` preserves the pre-cleanu
   fallback; `_ensure_facts` error translation; `duration_ms` on refused/failed events;
   mutating a caller dict after `Finding` construction.
 - Leftover `# tests/<file>.py` header comments copied from plan briefs.
+
+---
+
+## Update — 2026-10-14: plan 2 (export, import, encryption) merged to `main`
+
+Plan `_bmad-output/planning-artifacts/plans/2026-10-13-plan-2-transfer.md`; spec amended
+(§6, §7.3, §9, §10, §13, §16 V1–V8). Commits `9aef17c`..`d1f8eb1`, fast-forwarded into `main`
+locally, **not pushed**.
+
+- [done] Tasks 0–11, each reviewed; a whole-branch review (0 critical, 2 important, both fixed
+  in `3cabe3c` and `d1f8eb1`: a dropped dump stream now kills and reaps its tool, and a dump's
+  span is never left as the caller's current span). `make check` passes; `make
+  test-transfer` on mysql 8.0/8.4/9.7 (21 passed) and mariadb 10.2/11.4 (20 passed, 1
+  MySQL-only skip); integration 40/40 on MySQL 8.4; `make ci` all jobs; alignment 0 findings.
+- [ruling] A connection value whose option-file form exceeds 1024 UTF-8 bytes, or that is not
+  UTF-8, is refused: MariaDB's option reader splits long lines, which lets a value inject
+  options.
+- [ruling] MySQL 8.1–8.3 clients have no `--no-login-paths`; accepted (end-of-life, not in the
+  matrix).
+- [ruling] A dump still running at interpreter exit is killed by its finalizer and logged
+  `failed`; a stream dropped after its last byte but before `StopIteration` also logs `failed`.
+- [todo — plan 3] The plan's integration readiness snippet pings over the Unix socket and gets
+  the image's init server; it needs `-h127.0.0.1`.
+
+### Open deferred minors from plan 2
+
+- Transfer tests: the Makefile `EXIT` trap does not fire on Ctrl-C under dash, leaking the
+  container on port 33399; the readiness loop falls through silently after 90 tries and
+  hard-codes `root`/`root`; no `docker logs` on failure; apt debconf noise.
+- `TransferError` cannot be pickled; its docstring states a caller duty as a guarantee.
+- `_client`: `option_pipe` leaks its read fd if `os.write` raises; allow-listed value options
+  pass in bare form and can swallow the database positional (require `=`); MySQL 5.7-style
+  version banners are not recognised; `ClientTool.label` (and `TransferResult.tool`) repeats
+  the program name; a refused value stays in traceback frame locals.
+- `encryption`: `read_identity` gives misleading messages for SSH keys and passphrase-wrapped
+  files and returns only the first identity; recipients are not whitespace-stripped;
+  `decrypt` should warn that a `CorruptDumpError` may leave an unauthenticated plaintext
+  prefix in the writer; encrypt's caller-I/O `OSError` has `errno` `None`.
+- Preflight messages say "the administrator" for dump and load credentials.
+- `dump`: the span logs `succeeded` before the flush/fsync that can still fail; a target
+  that is an existing directory runs the whole dump and fails at the rename; the directory is
+  not fsynced after the rename; stderr is capped before redaction, so a password prefix can
+  straddle byte 65536; a text-mode object not derived from `io.TextIOBase` still raises
+  `TypeError` on write.
+- `load`: `_prepare` checks an early decrypt error only when the head is empty; head-read
+  failures omit the path; `_Decrypting.close` leaves a daemon thread holding a stalled caller
+  stream after 10 s; `_IterReader` should `cast("B")` non-byte memoryviews.
+- `check dump` cannot report a bad recipient or unwritable output (spec §7.3 makes those
+  exceptions, not findings); a `recipients=` parameter emitting `MISSING_DEPENDENCY` would
+  close it.
+- CLI: a persistent stdout flush failure still exits 120 at shutdown; `_emit` is typed `Any`;
+  `_restore_structlog` belongs in `conftest.py`.
+- Test gaps: the subprocess scope guard misses aliased imports, `os.system`, `posix_spawn`
+  and asyncio; the stream-form dump is compared only by INSERT count; the sandbox test never
+  asserts the 10.2 refusal fires first and keys on the exact tag; the views test creates no
+  trigger; the truncated-dump test does not assert the target stayed empty; login-file
+  controls skip by engine string rather than tool family; the memory test is weak (the
+  chunk-size assertion is the real proof); no `BrokenPipeError` passthrough test in
+  `decrypt`; the password-option test should also match "passphrase".

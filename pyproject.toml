@@ -37,6 +37,7 @@ dependencies = [
 [project.optional-dependencies]
 aws = ["boto3>=1.34"]
 wpconfig = ["l3io-wordpress-config>=0.0.2"]
+encryption = ["pyrage>=1.4,<2"]
 
 # Development and CI arrangement only, and a deliberate choice over the Gitea
 # index that l3io-wordpress-config was briefly published to. That index requires
@@ -107,6 +108,8 @@ dev = [
   "packaging==26.3",
   # Span assertions need a real SDK; the package itself depends on the API only.
   "opentelemetry-sdk==1.44.0",
+  # The encryption extra, also here because `uv run` prunes extras.
+  "pyrage==1.4.0",
   # The optional extras are dev dependencies too, so a bare `uv run` can
   # exercise the code paths behind them. `uv run` syncs the default groups
   # only, which PRUNES extras -- without this, every `uv run` silently
@@ -192,4 +195,4 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-markers = ["slow: builds a wheel or talks to a real database server"]
+markers = ["slow: builds a wheel or talks to a real database server", "transfer: export/import tests run by make test-transfer inside a server image"]

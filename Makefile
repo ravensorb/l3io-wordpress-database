@@ -30,7 +30,7 @@ INFISICAL_ENV ?= prod
 ACT_RUNNER ?= $(INFISICAL) run --projectId $(INFISICAL_PROJECT) --env $(INFISICAL_ENV) --
 
 .DEFAULT_GOAL := help
-.PHONY: help sync check lint format types test test-db contracts namespace-check audit build verify-wheel ci ci-job ci-list ci-dryrun ci-dryrun-one clean
+.PHONY: help sync check lint format types test test-db test-transfer contracts namespace-check audit build verify-wheel ci ci-job ci-list ci-dryrun ci-dryrun-one clean
 
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  %-16s %s\n", $$1, $$2}'
@@ -55,6 +55,19 @@ test: ## Unit tests (integration skips without DB_HOST)
 test-db: ## Integration tests against a server; set DB_HOST first
 	@test -n "$(DB_HOST)" || { echo "set DB_HOST (and DB_PORT/DB_ADMIN_USER/DB_ADMIN_PASSWORD)"; exit 1; }
 	$(UV) run pytest -q tests/test_integration.py
+
+TRANSFER_PORT ?= 33399
+
+test-transfer: ## Export/import tests against ENGINE (a server image) using its own client tools
+	@test -n "$(ENGINE)" || { echo "set ENGINE, e.g. make test-transfer ENGINE=mysql:8.4"; exit 1; }
+	@set -eu; name="l3io-transfer-$$$$"; \
+	docker run -d --rm --name "$$name" -e MYSQL_ROOT_PASSWORD=root -e MARIADB_ROOT_PASSWORD=root \
+	  -p 127.0.0.1:$(TRANSFER_PORT):3306 "$(ENGINE)" >/dev/null; \
+	trap 'docker rm -f "'"$$name"'" >/dev/null 2>&1' EXIT; \
+	docker run --rm --network host -v "$(CURDIR)":/repo:ro \
+	  -e L3IO_ENGINE="$(ENGINE)" -e L3IO_TRANSFER_CONTAINER=1 \
+	  -e DB_HOST=127.0.0.1 -e DB_PORT=$(TRANSFER_PORT) -e DB_ADMIN_USER=root -e DB_ADMIN_PASSWORD=root \
+	  --entrypoint bash "$(ENGINE)" /repo/tools/transfer-tests.sh
 
 contracts: ## Architecture contracts (AD-27, AD-28)
 	$(UV) run pytest -q tests/test_architecture.py tests/test_identifiers.py

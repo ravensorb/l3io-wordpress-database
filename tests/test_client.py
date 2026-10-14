@@ -96,6 +96,46 @@ def test_a_nul_in_a_value_is_rejected() -> None:
         _client.option_file_text(ResolvedCredentials("u", "a\x00b"), CONN)
 
 
+LONG = "A" * 4084 + "plugin-dir=/tmp/evil#"
+
+
+@pytest.mark.parametrize(
+    ("field", "credentials", "connection"),
+    [
+        ("user", ResolvedCredentials(LONG, "pw"), CONN),
+        ("password", ResolvedCredentials("u", LONG), CONN),
+        ("host", ResolvedCredentials("u", "pw"), Connection(host=LONG, database="wp_site")),
+    ],
+)
+def test_a_value_long_enough_to_split_an_option_line_is_rejected(
+    field: str, credentials: ResolvedCredentials, connection: Connection
+) -> None:
+    """MariaDB reads a line longer than its buffer as two, so the tail becomes an option."""
+    with pytest.raises(InvalidArgumentsError) as caught:
+        _client.option_file_text(credentials, connection)
+    assert field in str(caught.value)
+    assert "1024" in str(caught.value)
+    assert "plugin-dir" not in str(caught.value)
+    assert "A" * 64 not in str(caught.value)
+
+
+def test_the_length_cap_counts_the_escaped_utf8_bytes() -> None:
+    _client.option_file_text(ResolvedCredentials("u", "a" * 1024), CONN)
+    for over in ("a" * 1025, "\\" * 513, "é" * 513):
+        with pytest.raises(InvalidArgumentsError):
+            _client.option_file_text(ResolvedCredentials("u", over), CONN)
+
+
+def test_a_value_that_is_not_utf8_is_rejected_without_chaining_the_secret() -> None:
+    secret = b"hunter2\xff".decode("utf-8", "surrogateescape")
+    with pytest.raises(InvalidArgumentsError) as caught:
+        _client.option_file_text(ResolvedCredentials("u", secret), CONN)
+    assert "password" in str(caught.value)
+    assert "hunter2" not in str(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
 def test_option_pipe_is_readable_once_and_closed_after() -> None:
     with _client.option_pipe(ResolvedCredentials("u", SECRET), CONN) as fd:
         data = os.read(fd, 65536).decode()

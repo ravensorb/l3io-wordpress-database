@@ -58,6 +58,8 @@ _SANDBOX_SINCE: dict[tuple[int, int], int] = {
 
 _NO_LOGIN_FILE = "/nonexistent/l3io-wordpress-database/no-login-file"
 
+_MAX_VALUE_BYTES = 1024
+
 #: Options a caller may add. Anything touching credentials, option files, the
 #: host or an output file is refused by omission.
 DUMP_OPTIONS = frozenset(
@@ -156,12 +158,29 @@ def find_tool(purpose: str, family: ServerFamily) -> ClientTool | None:
     return None
 
 
-def _quote(value: str) -> str:
-    """An option-file value: quoted, with backslash, quote and newline escaped (V5)."""
+def _quote(field: str, value: str) -> str:
+    """An option-file value: quoted, with backslash, quote and newline escaped (V5).
+
+    MariaDB reads an option line longer than its fixed buffer (about 4 KiB) as
+    two lines, quoted or not, so an overlong value would smuggle in an option of
+    the caller's choosing. Values are capped well below that. No message here
+    may carry the value, and no refusal may chain the encoder's exception, whose
+    ``object`` is the value itself.
+    """
     if "\x00" in value:
         msg = "a connection value cannot contain a NUL character"
         raise InvalidArgumentsError(msg)
     escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    try:
+        size = len(escaped.encode())
+    except UnicodeEncodeError:
+        size = None
+    if size is None:
+        msg = f"the {field} is not valid UTF-8 text"
+        raise InvalidArgumentsError(msg)
+    if size > _MAX_VALUE_BYTES:
+        msg = f"the {field} is longer than {_MAX_VALUE_BYTES} bytes once escaped"
+        raise InvalidArgumentsError(msg)
     return f'"{escaped}"'
 
 
@@ -169,9 +188,9 @@ def option_file_text(credentials: ResolvedCredentials, connection: Connection) -
     """The ``[client]`` options a program reads from the pipe."""
     return (
         "[client]\n"
-        f"user={_quote(credentials.username)}\n"
-        f"password={_quote(credentials.password)}\n"
-        f"host={_quote(connection.host)}\n"
+        f"user={_quote('user', credentials.username)}\n"
+        f"password={_quote('password', credentials.password)}\n"
+        f"host={_quote('host', connection.host)}\n"
         f"port={connection.port}\n"
         "protocol=TCP\n"
     )

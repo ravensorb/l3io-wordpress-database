@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import shutil
+import subprocess
 import tempfile
 import uuid
 from collections.abc import Iterator
@@ -16,8 +18,10 @@ from pathlib import Path
 import pymysql
 import pytest
 
-from l3io.wp.database import Connection, Explicit, ensure
+from l3io.wp.database import Connection, Explicit, _client, ensure
+from l3io.wp.database.credentials import ResolvedCredentials
 from l3io.wp.database.errors import CorruptDumpError, DecryptionError, RefusedError, TransferError
+from l3io.wp.database.server import ServerFamily
 from l3io.wp.database.transfer import check_dump, check_load, dump, iter_dump, load
 from l3io.wp.database.verdict import Code
 
@@ -186,32 +190,56 @@ def test_no_password_in_argv_environment_or_temp_files(names: tuple[str, str]) -
     first = next(stream)
     cmdline = Path(f"/proc/{stream.pid}/cmdline").read_bytes()
     environ = Path(f"/proc/{stream.pid}/environ").read_bytes()
+    options = re.search(rb"--defaults-file=/dev/fd/(\d+)\x00", cmdline)
+    assert options is not None
+    options_target = str(Path(f"/proc/{stream.pid}/fd/{int(options[1])}").readlink())
     rest = b"".join(stream)
     assert first and rest is not None
-    assert b"--defaults-file=/dev/fd/" in cmdline
+    assert options_target.startswith("pipe:")
     assert SECRET.encode() not in cmdline
     assert SECRET.encode() not in environ
     assert b"MYSQL_PWD" not in environ
     assert set(temp.iterdir()) == before
 
 
-def test_hostile_my_cnf_and_mylogin_cnf_change_nothing(names: tuple[str, str]) -> None:
-    home = Path.home()
-    fixture = Path(__file__).parent / "fixtures" / "hostile.mylogin.cnf"
-    planted = [home / ".mylogin.cnf", home / ".my.cnf"]
-    saved = {p: p.read_bytes() for p in planted if p.exists()}
-    try:
-        shutil.copyfile(fixture, planted[0])
-        planted[0].chmod(0o600)
-        planted[1].write_text("[client]\nuser=nobody\npassword=wrong\nhost=10.255.255.1\n")
-        result = dump(site(names[0]), ROOT, io.BytesIO())
-        assert result.bytes > 0
-    finally:
-        for path in planted:
-            if path in saved:
-                path.write_bytes(saved[path])
-            else:
-                path.unlink(missing_ok=True)
+def plant_hostile_home(home: Path, *, my_cnf: bool = True) -> None:
+    """A login file for user ``nobody`` (MySQL only) and, optionally, a hostile ``.my.cnf``."""
+    login = home / ".mylogin.cnf"
+    shutil.copyfile(Path(__file__).parent / "fixtures" / "hostile.mylogin.cnf", login)
+    login.chmod(0o600)
+    if my_cnf:
+        (home / ".my.cnf").write_text("[client]\nuser=nobody\npassword=wrong\nhost=10.255.255.1\n")
+
+
+def test_hostile_my_cnf_and_mylogin_cnf_change_nothing(
+    names: tuple[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plant_hostile_home(tmp_path)
+    real_env = _client.child_env
+    monkeypatch.setattr(_client, "child_env", lambda: {**real_env(), "HOME": str(tmp_path)})
+    result = dump(site(names[0]), ROOT, io.BytesIO())
+    assert result.bytes > 0
+
+
+def test_the_planted_login_file_is_read_without_suppression(tmp_path: Path) -> None:
+    """The control for the test above: without suppression the client takes user nobody."""
+    if ENGINE.startswith("mariadb"):
+        pytest.skip("MariaDB clients have no login-path file to suppress")
+    plant_hostile_home(tmp_path, my_cnf=False)
+    tool = _client.find_tool(_client.PURPOSE_DUMP, ServerFamily.MYSQL)
+    assert tool is not None
+    env = {k: v for k, v in _client.child_env().items() if k != "MYSQL_TEST_LOGIN_FILE"}
+    credentials = ResolvedCredentials("someone", "unused")
+    with _client.option_pipe(credentials, site("unused")) as fd:
+        done = subprocess.run(  # noqa: S603 - a found client tool, fixed arguments
+            [tool.path, f"--defaults-file=/dev/fd/{fd}", "--print-defaults"],
+            capture_output=True,
+            text=True,
+            env={**env, "HOME": str(tmp_path)},
+            pass_fds=(fd,),
+            check=True,
+        )
+    assert "--user=nobody" in done.stdout.split()
 
 
 @pytest.mark.parametrize(

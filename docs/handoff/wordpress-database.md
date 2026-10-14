@@ -156,8 +156,8 @@ against `git.ravenwolf.org`. No values anywhere in this repo.
 - [done] **Verified 2026-10-12 after the rename**, on a fresh `uv sync --locked --all-extras --dev`:
   `pytest` 107 passed, 13 skipped (integration, no `DB_HOST`);
   `../l3io-wordpress-backup/scripts/check-cicd-alignment.py` 3 repos, 0 findings.
-- [todo] **Not pushed.** `main` is 3 commits ahead of `origin/main`. Last green GitHub CI:
-  `70aa7a0`.
+- [done 2026-10-14] **Push.** `main` was 3 commits ahead of `origin/main`, last green GitHub CI
+  `70aa7a0`. Pushed with plan 2 (`70aa7a0..81fb7ec`); see the plan 2 update below.
 
 ### Known stale in this file and in `AGENTS.md`
 
@@ -214,8 +214,9 @@ new security-audit legs included; `security-audit.yml` ran clean under act;
   wpconfig extra's `MissingDependencyError` told users to install `l3io-wp-config`;
   `docs/migration.md` linked the moved `CHANGELOG.md`. `tests/test_declared_facts.py` now
   fails on the first two classes. **Nothing checks Markdown links.**
-- [todo] **Push**, then confirm the five-engine matrix on GitHub. The 9.7 and 10.2 legs have
-  been verified locally against the same images, but never on a GitHub runner.
+- [done 2026-10-14, run `38642496120`] **Push**, then confirm the five-engine matrix on GitHub.
+  All 26 CI jobs passed on `81fb7ec`, including the 9.7 and 10.2 legs on Python 3.11–3.13 and
+  the transfer job on all five engines; the security audit passed too.
 - [done] `AGENTS.md` refresh approved and applied: sibling names, rev→tag, and the
   `__init__.py` caveat (now caught in this repo alone). Provenance: 2026-10-12 against
   `6c8c423`.
@@ -325,7 +326,7 @@ Branch is local, not pushed; local branch `legacy/main` preserves the pre-cleanu
 
 Plan `_bmad-output/planning-artifacts/plans/2026-10-13-plan-2-transfer.md`; spec amended
 (§6, §7.3, §9, §10, §13, §16 V1–V8). Commits `9aef17c`..`d1f8eb1`, fast-forwarded into `main`
-locally, **not pushed**.
+locally and pushed 2026-10-14 (GitHub CI run `38642496120`: all 26 jobs green).
 
 - [done] Tasks 0–11, each reviewed; a whole-branch review (0 critical, 2 important, both fixed
   in `3cabe3c` and `d1f8eb1`: a dropped dump stream now kills and reaps its tool, and a dump's

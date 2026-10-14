@@ -282,3 +282,15 @@ def test_an_extra_without_a_leg_is_caught(tmp_path: Path) -> None:
     script = tmp_path / "verify_extras.sh"
     script.write_text('uv run --with "l3io-wordpress-database[aws] @ $url" python -c 1\n')
     assert extras_verified(script) == {"aws"}
+
+
+# ------------------------------------------------------------ coverage floor
+
+
+def test_ci_measures_coverage_against_a_floor() -> None:
+    with (REPO_ROOT / "pyproject.toml").open("rb") as fh:
+        floor = tomllib.load(fh).get("tool", {}).get("coverage", {}).get("report", {})
+    assert isinstance(floor.get("fail_under"), int) and floor["fail_under"] >= 85, floor
+    ci = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
+    runs = " ".join(str(s.get("run", "")) for s in ci["jobs"]["test"]["steps"])
+    assert "--cov=l3io.wp.database" in runs, "the test job no longer measures coverage"

@@ -176,3 +176,9 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 addopts = "-q"
 markers = ["slow: builds a wheel or talks to a real database server", "transfer: export/import tests run by make test-transfer inside a server image"]
+
+# Just under the line coverage the integration legs measure (89% on MySQL 8.4), so
+# a deleted test file fails CI instead of passing quietly. pytest-cov applies it to
+# every run that measures coverage; `make test` measures none.
+[tool.coverage.report]
+fail_under = 87

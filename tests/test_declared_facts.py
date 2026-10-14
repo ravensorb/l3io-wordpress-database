@@ -222,3 +222,28 @@ def test_a_retired_script_name_is_caught(tmp_path: Path, dollars: str) -> None:
     planted = tmp_path / "Makefile"
     planted.write_text(f'\tuv run --with "{dollars}wheel" l3io-wp-database --version\n')
     assert wheel_script_invocations([planted]) == [("Makefile:1", "l3io-wp-database")]
+
+
+# ------------------------------------------------------------ upper bounds
+
+
+def unbounded(requirements: list[str]) -> list[str]:
+    """Requirements with nothing capping what a resolver may pick (AD-15)."""
+    caps = {"<", "<=", "==", "===", "~="}
+    return [
+        r for r in requirements if not any(s.operator in caps for s in Requirement(r).specifier)
+    ]
+
+
+def test_every_runtime_requirement_has_an_upper_bound() -> None:
+    project = _project()
+    declared = [
+        *project["dependencies"],
+        *(r for extra in project["optional-dependencies"].values() for r in extra),
+    ]
+    assert declared, "no requirements declared -- this guard is vacuous"
+    assert not unbounded(declared)
+
+
+def test_an_unbounded_requirement_is_caught() -> None:
+    assert unbounded(["boto3>=1.34", "pyrage>=1.4,<2", "x==1.0", "y~=2.1"]) == ["boto3>=1.34"]

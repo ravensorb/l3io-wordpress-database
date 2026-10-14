@@ -99,3 +99,13 @@ def test_an_unreadable_file_raises_our_error_not_the_stdlib_one(tmp_path: Path) 
     """AD-14: no dependency's exception type crosses this boundary."""
     with pytest.raises(ConfigUnreadableError):
         WpConfigFile(tmp_path / "does-not-exist.php")
+
+
+def test_a_password_containing_paren_semicolon_is_read_whole(tmp_path: Path) -> None:
+    """``l3io-wordpress-config`` before 0.1.0 read this password as ``'ab``."""
+    path = write(
+        tmp_path,
+        "<?php\ndefine('DB_NAME', 'wp_site');\ndefine('DB_USER', 'wp');\n"
+        "define('DB_PASSWORD', 'ab);cd');\ndefine('DB_HOST', 'localhost');\n",
+    )
+    assert WpConfigFile(path).resolve().password == "ab);cd"

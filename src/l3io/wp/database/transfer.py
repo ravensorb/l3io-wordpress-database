@@ -773,6 +773,10 @@ def check_load(
 ) -> Verdict:
     """What :func:`load` would find. The source header is read only for a path."""
     with operation("check_load", connection) as fields, ExitStack() as cleanup:
+        if source is not None and not isinstance(source, (str, os.PathLike)):
+            # Reading a stream's head here would leave load() a dump without its head.
+            msg = "check_load takes source only as a path; a stream cannot be read twice"
+            raise InvalidArgumentsError(msg)
         header = None
         if source is not None:
             header, *_ = _prepare(_open_source(source, cleanup), identities, cleanup)

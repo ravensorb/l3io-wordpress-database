@@ -577,6 +577,20 @@ def test_an_unopenable_path_source_starts_nothing(
     assert isinstance(info.value.__cause__, FileNotFoundError)
 
 
+@pytest.mark.parametrize("make_source", [io.BytesIO, lambda data: iter([data])])
+def test_check_load_refuses_a_stream_source_without_reading_it(
+    monkeypatch: pytest.MonkeyPatch, make_source: Any
+) -> None:
+    monkeypatch.setattr(transfer, "_load_plan", lambda *_, **__: pytest.fail("planned a load"))
+    monkeypatch.setattr(transfer, "_prepare", lambda *_, **__: pytest.fail("read the source"))
+    source = make_source(b"-- MySQL dump 10.13\n")
+    with pytest.raises(InvalidArgumentsError, match="only as a path") as info:
+        transfer.check_load(CONN, Explicit("wpuser", SECRET), source=source)
+    assert SECRET not in str(info.value)
+    if isinstance(source, io.BytesIO):
+        assert source.tell() == 0
+
+
 class _FailingReader(io.RawIOBase):
     """Serves ``data`` up to ``limit`` bytes, then fails like a dying disk."""
 

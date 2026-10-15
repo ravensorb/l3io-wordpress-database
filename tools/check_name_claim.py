@@ -1,4 +1,4 @@
-"""Release gate (FR-50): refuse to publish under a name somebody else holds.
+"""Name-claim release gate: refuse to publish under a name somebody else holds.
 
 Run before every upload to PyPI or TestPyPI. Both burn a name, so a conflict
 found after upload is unrecoverable. The name and repository URL are read from

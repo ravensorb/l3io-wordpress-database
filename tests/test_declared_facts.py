@@ -5,7 +5,7 @@ file -- never from a hand-kept list, and asserts that set is non-empty before
 asserting the rule over it. Each has a scope-attack test that plants a violation
 somewhere a hand-kept list would not have named.
 
-- FR-48: the supported-Python set. ``requires-python`` and the
+- The supported-Python set. ``requires-python`` and the
   ``Programming Language :: Python :: 3.x`` classifiers are the declaration; every
   workflow matrix with a ``python`` axis restates it.
 - The distribution a ``MissingDependencyError`` names must be one its extra really
@@ -50,7 +50,7 @@ def _project() -> dict[str, Any]:
     return project
 
 
-# ---------------------------------------------------------------- FR-48
+# ---------------------------------------------------------------- supported Pythons
 
 
 def declared_pythons(project: dict[str, Any]) -> set[str]:

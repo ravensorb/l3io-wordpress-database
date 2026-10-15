@@ -1,16 +1,15 @@
 """Validating and quoting MySQL identifiers.
 
-This module exists because of a verified privilege-escalation defect in the
-original package. A *database-level* ``GRANT`` treats the database name as a
-``LIKE`` pattern, so ``_`` is a single-character wildcard. Granting on
-``wp_site`` therefore also grants on ``wpXsite``:
+A database-level ``GRANT`` matches its database name as a ``LIKE`` pattern, so
+``_`` is a single-character wildcard. Granting on ``wp_site`` therefore also
+grants on ``wpXsite``:
 
     GRANT ALL PRIVILEGES ON `wp_site`.* TO 'victim'@'%';
     -- victim can then SHOW and CREATE TABLE in wpXsite
 
-Backticks do not suppress this; only escaping the wildcard does. Because
-essentially every WordPress database is named with an underscore, the original
-``GRANT ALL PRIVILEGES ON {n}.*`` over-granted every user it created.
+Backticks do not suppress this; only escaping the wildcard does. Essentially
+every WordPress database is named with an underscore, so an unescaped
+``GRANT ALL PRIVILEGES ON {n}.*`` over-grants every user it creates.
 """
 
 from __future__ import annotations

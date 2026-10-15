@@ -136,10 +136,10 @@ jobs:
         # matrix exists to catch. It left Extended Support on 2026-04-30 and is
         # carried deliberately, because WordPress hosts still run it.
         #
-        # 9.7 is the 9.x LTS, the generation FR-8/FR-9 exist for: 9.0 removed
-        # mysql_native_password outright. Exact tag, because `mysql:lts` moves.
+        # 9.7 is the 9.x LTS, the generation that removed mysql_native_password
+        # outright (9.0). Exact tag, because `mysql:lts` moves.
         #
-        # mariadb:10.2 is the FLOOR leg (NFR-4), not a popularity pick. Verified
+        # mariadb:10.2 is the supported floor's leg, not a popularity pick. Verified
         # 2026-10-12: 10.1.48 rejects ALTER USER with ERROR 1064 and fails six of
         # the thirteen integration tests; 10.2.44 passes all thirteen. This leg is
         # what keeps that floor true rather than remembered.
@@ -233,9 +233,8 @@ jobs:
         with:
           version: "0.11.6"
       # --no-sources is required, not cosmetic: l3io-wordpress-config is consumed from
-      # git during development, and a VCS dependency reaching published
-      # metadata is exactly the defect that left the predecessor package
-      # unresolvable for six years.
+      # git during development, and a VCS dependency in published metadata
+      # makes the package unresolvable from PyPI.
       - run: uv build --no-sources --out-dir "$DIST_DIR"
       - name: no development source reached the dependency metadata
         # Inspect Requires-Dist LINES specifically. A hostname search over the
@@ -270,10 +269,9 @@ jobs:
 
   verify-install:
     # Installs a BUILT WHEEL into a clean isolated environment. Installing the
-    # working tree would have passed throughout the entire six years the
-    # predecessor package could not be installed from PyPI at all -- that is
-    # the blind spot this closes, and it closes it against an artifact rather
-    # than against the source directory.
+    # working tree passes even when the published wheel cannot be installed --
+    # that is the blind spot this closes, and it closes it against an artifact
+    # rather than against the source directory.
     #
     # It builds its own wheel instead of downloading the one `build` uploaded.
     # That is deliberate: act's artifact server cannot accept the upload, so a

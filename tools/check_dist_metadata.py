@@ -25,8 +25,7 @@ import zipfile
 from pathlib import Path
 
 #: A dependency source that must never reach published metadata. A VCS or local
-#: dependency in a published release is the defect that left the predecessor
-#: package unresolvable from PyPI for six years.
+#: dependency in a published release makes the package unresolvable from PyPI.
 FORBIDDEN = (
     "git+",
     "@ git",

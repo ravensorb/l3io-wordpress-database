@@ -46,8 +46,7 @@ Planning artifacts live in `_bmad-output/planning-artifacts/`.
 
 - `l3io-wordpress-config` is pinned to a git tag in `[tool.uv.sources]` and must never
   reach a release. `uv build --no-sources` strips it; a VCS dependency in
-  published metadata is the defect that left the predecessor unresolvable for
-  six years.
+  published metadata makes the package unresolvable from PyPI.
 - Under act, database services are on `127.0.0.1`, not the service label — act
   runs the job with `--network host`. The test matrix collapses to one leg via
   `vars.LOCAL_ACT` because parallel legs collide on host port 3306.

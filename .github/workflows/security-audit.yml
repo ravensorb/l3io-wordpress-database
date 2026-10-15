@@ -1,4 +1,4 @@
-# l3io-wordpress-database dependency audit (FR-45).
+# l3io-wordpress-database dependency audit.
 #
 # Scans uv.lock against the OSV advisory database with `uv audit`. Native to the
 # uv already pinned by `required-version`, so no extra tool or export step, and

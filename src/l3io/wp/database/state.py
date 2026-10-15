@@ -1,10 +1,10 @@
 """Outcomes of inspecting a database's state.
 
-The original package answered "does this database exist?" with a bare boolean
-produced by a method that caught every exception and returned ``False``. That
-made "absent", "wrong password" and "host unreachable" indistinguishable -- and
-since the caller's next move is to create objects using *administrative*
-credentials, collapsing those cases is the dangerous part, not a cosmetic one.
+"Does this database exist?" answered with a bare boolean, from a method that
+catches every exception and returns ``False``, makes "absent", "wrong password"
+and "host unreachable" indistinguishable -- and since the caller's next move is
+to create objects using *administrative* credentials, collapsing those cases is
+the dangerous part, not a cosmetic one.
 """
 
 from __future__ import annotations

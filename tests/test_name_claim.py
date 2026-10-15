@@ -1,4 +1,4 @@
-"""The FR-50 release gate, tools/check_name_claim.py, with the index faked.
+"""The name-claim release gate, tools/check_name_claim.py, with the index faked.
 
 The gate's one dangerous failure is passing when it should not, so most of these
 plant a refusal: a stranger's project, a stranger on the separator variant only,

@@ -1,10 +1,9 @@
 """Interpreting WordPress's ``db_version``.
 
-WordPress stores a schema revision in its options table. The original package
-mapped it to a release number with a hand-maintained dictionary that stopped at
-WordPress 5.5.1 -- so by the time this rewrite began it returned ``None`` for
-*every* WordPress from 5.6 onward. It had quietly stopped working rather than
-merely aged, which is the failure mode a hand-kept table invites.
+WordPress stores a schema revision in its options table. A hand-maintained
+dictionary mapping it to a release number stops at whatever release its author
+last added, and then returns ``None`` for every WordPress after it: it quietly
+stops working rather than merely ageing.
 
 The map is now derived from the source of truth and committed as generated
 data, so the runtime needs no network. See ``tools/generate_version_map.py``;

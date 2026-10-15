@@ -88,8 +88,8 @@ def test_py_typed_is_present() -> None:
 def test_built_wheel_has_no_namespace_init(tmp_path: Path) -> None:
     """The wheel is what users install; the working tree is not.
 
-    Installing the working tree would have passed throughout the package's
-    entire six-year outage, which is the blind spot this closes.
+    Installing the working tree passes even when the published wheel cannot be
+    installed, which is the blind spot this closes.
 
     Built into an empty directory, and exactly one wheel asserted. This test
     used to build into the repository's dist/ and inspect ``sorted(...)[-1]``,

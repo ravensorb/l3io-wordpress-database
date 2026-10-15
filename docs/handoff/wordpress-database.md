@@ -47,14 +47,21 @@ repositories; message them.
   passed; MariaDB 20 passed, 1 MySQL-only skip); integration 40/40 on MySQL 8.4; `make ci`
   6/6 jobs, leaving no root-owned file; `make ci-dryrun`; family CI/CD alignment 0 findings.
 
-## Remote housekeeping (plan 3, Task 13 — after the merge, each step confirmed by Shawn)
+## Remote housekeeping (plan 3, Task 13, run 2026-10-15)
 
-1. `git push origin legacy/main`
-2. `git push origin main`, then watch CI to completion.
-3. `gh api -X POST repos/ravensorb/l3io-wordpress-database/branches/dev-1.0.1/rename -f new_name=legacy/dev-1.0.1`
-4. Delete tag `v1.0` on GitHub and locally.
-5. `gh release delete v0.0.1 --repo ravensorb/l3io-wordpress-database --yes` (the tag stays).
-6. Delete the Gitea package `l3io-wp-database` 0.0.1 in org `liquidlogiclabs`.
+1. Done: `legacy/main` is on GitHub.
+2. Done: `main` at `1eaefcb` is on GitHub; CI run 38743973051 passed all 32 jobs (four
+   Pythons by five engines, five transfer engines, build, four clean installs), with the
+   87% coverage floor met on every leg. The security audit passed.
+3. Done: `dev-1.0.1` is renamed `legacy/dev-1.0.1`.
+4. Done: tag `v1.0` is deleted on GitHub and locally.
+5. Done: the GitHub release `v0.0.1` is deleted; its tag stays.
+6. **Open (Shawn's):** delete the Gitea package `l3io-wp-database` 0.0.1 at
+   <https://git.ravenwolf.org/liquidlogiclabs/-/packages/pypi/l3io-wp-database/0.0.1>.
+   The agent's Gitea token lacks `write:package`, so the API refused.
+
+Not in this plan, left untouched: the GitHub release `v0.0.2` (marked Latest) and the Gitea
+package `l3io-wordpress-database` 0.0.2.
 
 ## Releasing 0.1.0 (Shawn's, in this order — AD-15)
 

@@ -63,11 +63,13 @@ test-transfer: ## Export/import tests against ENGINE (a server image) using its 
 	@set -eu; name="l3io-transfer-$$$$"; \
 	docker run -d --rm --name "$$name" -e MYSQL_ROOT_PASSWORD=root -e MARIADB_ROOT_PASSWORD=root \
 	  -p 127.0.0.1:$(TRANSFER_PORT):3306 "$(ENGINE)" >/dev/null; \
-	trap 'docker rm -f "'"$$name"'" >/dev/null 2>&1' EXIT; \
-	docker run --rm --network host -v "$(CURDIR)":/repo:ro \
+	trap 'docker rm -f "'"$$name"'" "'"$$name"'-tests" >/dev/null 2>&1' EXIT; \
+	trap 'exit 130' INT TERM; \
+	docker run --rm --name "$$name-tests" --network host -v "$(CURDIR)":/repo:ro \
 	  -e L3IO_ENGINE="$(ENGINE)" -e L3IO_TRANSFER_CONTAINER=1 \
 	  -e DB_HOST=127.0.0.1 -e DB_PORT=$(TRANSFER_PORT) -e DB_ADMIN_USER=root -e DB_ADMIN_PASSWORD=root \
-	  --entrypoint bash "$(ENGINE)" /repo/tools/transfer-tests.sh
+	  --entrypoint bash "$(ENGINE)" /repo/tools/transfer-tests.sh & \
+	wait $$!
 
 contracts: ## Architecture contracts (AD-27, AD-28)
 	$(UV) run pytest -q tests/test_architecture.py tests/test_identifiers.py

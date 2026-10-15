@@ -62,3 +62,9 @@ def test_user_name_limit_is_the_stricter_mysql_one() -> None:
     assert validate_user_name("u" * 32) == "u" * 32
     with pytest.raises(InvalidIdentifierError):
         validate_user_name("u" * 33)
+
+
+def test_a_user_name_with_a_quote_is_refused() -> None:
+    """``'`` breaks the ``'user'@'host'`` grantee form the grant lookup compares against."""
+    with pytest.raises(InvalidIdentifierError, match="forbidden"):
+        validate_user_name("o'brien")

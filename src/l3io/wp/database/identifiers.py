@@ -25,16 +25,18 @@ MAX_DATABASE_NAME = 64
 MAX_USER_NAME = 32
 
 _FORBIDDEN = {"\x00", "\n", "\r", "`", "/", "\\", "."}
+#: The grant lookup compares against the unescaped ``'user'@'host'`` form.
+_FORBIDDEN_IN_USER_NAME = frozenset("'")
 
 
-def _check(kind: str, value: str, limit: int) -> None:
+def _check(kind: str, value: str, limit: int, forbidden: frozenset[str] = frozenset()) -> None:
     if not isinstance(value, str) or not value:
         raise InvalidIdentifierError(kind, str(value), "must be a non-empty string")
     if len(value) > limit:
         raise InvalidIdentifierError(kind, value, f"longer than {limit} characters")
     if value != value.strip():
         raise InvalidIdentifierError(kind, value, "has leading or trailing whitespace")
-    found = _FORBIDDEN.intersection(value)
+    found = (_FORBIDDEN | forbidden).intersection(value)
     if found:
         chars = ", ".join(repr(c) for c in sorted(found))
         raise InvalidIdentifierError(kind, value, f"contains forbidden characters: {chars}")
@@ -51,7 +53,7 @@ def validate_database_name(name: str) -> str:
 
 def validate_user_name(name: str) -> str:
     """Return ``name`` if it is usable as a user identifier, else raise."""
-    _check("user name", name, MAX_USER_NAME)
+    _check("user name", name, MAX_USER_NAME, _FORBIDDEN_IN_USER_NAME)
     return name
 
 

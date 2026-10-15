@@ -3,299 +3,111 @@
 > **Resume line:** You are `wordpress-database`. Read `docs/handoff/wordpress-database.md` in
 > this repo, then continue.
 
-Written 2026-09-27, at `main` = `945069bf` plus three uncommitted changes (below).
+Current state as of 2026-10-14. Predecessor material, and this file's earlier history, are
+on the `legacy/main` branch and in `git log`; nothing here narrates them.
 
-## What I own
+## What this session owns
 
-This repository only: `l3io-wordpress-database`, second in a three-package family. The siblings are
-owned by other sessions — `wordpress-config` (`l3io-wp-config`, release position 1) and
-`wordpress-backup` (`l3io-wp-backup`, position 3). Do not edit their repos; message them.
+This repository only: `l3io-wordpress-database`, second in the `l3io.wp` family. The
+siblings belong to other sessions: `wordpress-config` (`l3io-wordpress-config`, release
+position 1) and `wordpress-backup` (`l3io-wordpress-backup`, position 3). Do not edit their
+repositories; message them.
 
-The package is a full rewrite of the abandoned `wpdatabase2`: new distribution, new PEP 420
-namespace `l3io.wp.database`, nothing preserved from the old surface, no shim.
+## Read first
 
-## Read first, in this order
+1. `AGENTS.md`: the operating rules. The `__init__.py` prohibition is the one that breaks
+   *other* packages if ignored.
+2. The spec, `_bmad-output/planning-artifacts/spec/2026-10-12-l3io-wordpress-database-design.md`,
+   and the three plans beside it in `plans/`.
+3. `docs/adr/`: this package's decisions. The family's rules (AD-n) are in
+   `l3io-wordpress-backup`'s architecture spine and are not copied here.
 
-1. `AGENTS.md` — the operating rules. Eleven lines, each a trap actually hit. The
-   `__init__.py` prohibition is the one that breaks *other* packages if ignored.
-2. `_bmad-output/planning-artifacts/prds/prd-py-wordpress-database-2026-09-15/prd.md` —
-   `status: final`, reconciled against `945069bf`. **§11 "Shipped state" is the fastest way to
-   learn what actually exists.** Superseded requirements keep their text with reasons; items
-   marked DEFERRED or PARTIALLY are genuinely not done.
-3. `.memlog.md` beside it — 81 entries, the authoritative decision record with reasoning. Go
-   here before re-deciding anything.
-4. `docs/rewrite-notes.md` (was `CHANGELOG.md`, moved in `731edec`; release notes now come
-   from commit messages) — including one change the upstream handoff asked for that was
-   rejected with evidence.
-5. The family's architecture spine and ADRs live in **`l3io-wordpress-backup`**, not here:
-   `_bmad-output/planning-artifacts/architecture/.../ARCHITECTURE-SPINE.md` (29 invariants,
-   AD-n) and `docs/adr/`. AD-2, AD-8, AD-9, AD-14, AD-27, AD-28, AD-29 bind this package.
+## Current state
 
-## State
+- **Branches.** `main` is at `ddd5481` locally; `origin/main` is at `82b322d` (CI run
+  `38643008470`, green). Plan 3 is on `feat/plan-3-release`, not merged and not pushed.
+  `legacy/main` (local, not pushed) preserves every predecessor file.
+- **Versions.** The last tag is `v0.0.2`; an untagged build derives `0.0.3.devN`. The next
+  release is **0.1.0**. Tags on GitHub: `v0.0.0` (baseline), `v0.0.1`, `v0.0.2`, `v1.0`.
+- **Supported.** Python 3.11–3.14; MySQL 8.0+ and MariaDB 10.2+. CI runs every test leg on
+  all four Pythons against MySQL 8.0, 8.4, 9.7 and MariaDB 10.2, 11.4, and the transfer job
+  on the same five engines.
+- **Gates.** Every requirement has an upper bound; `wpconfig` takes
+  `l3io-wordpress-config>=0.1.0,<0.2`, pinned for development to config's tag `v0.1.0`.
+  The coverage floor is 87% (89% measured on MySQL 8.4 and MariaDB 11.4). Every verdict
+  code is asserted by a test. The built wheel is installed bare and with each extra
+  (`tools/verify_extras.sh`). `publish.yml` starts only on `v*.*.*` tags and its notes
+  start from the previous release tag. The README's examples and the tree's
+  present-tense wording are guarded by `tests/test_readme.py` and
+  `tests/test_current_only.py`.
+- **Tombstone.** `tombstone/wpdatabase2/` builds `wpdatabase2` 0.0.16: no dependencies, and
+  its import raises an error naming `l3io-wordpress-database`.
+- **Verified 2026-10-14 on `feat/plan-3-release`:** `make check`; `make verify-wheel` (bare,
+  and `aws`, `encryption`, `wpconfig`); `make test-transfer` on all five engines (MySQL 21
+  passed; MariaDB 20 passed, 1 MySQL-only skip); integration 40/40 on MySQL 8.4; `make ci`
+  6/6 jobs, leaving no root-owned file; `make ci-dryrun`; family CI/CD alignment 0 findings.
 
-- [done] Rewrite merged to `main`; 15 jobs green on real GitHub Actions (lint/format/types,
-  architecture contracts, 9 test legs, build, 3 clean-install legs).
-- [done] 90 unit/contract + 13 integration tests; integration verified against MySQL 8.0, 8.4
-  and MariaDB 11.4.
-- [done] `make ci` replays all five jobs locally under `act`; `make verify-wheel` is the
-  fast standalone equivalent.
-- [done] PRD reconciled to `final` and addendum corrected.
-- [superseded 2026-10-12] **Commit and push three uncommitted tracked changes**: `.github/workflows/ci.yml`
-  (a stale comment fix), `pyproject.toml` and `uv.lock` (dependency pin moved from a rev to
-  tag `v1.5.0`). All gates pass with them in place; they are simply uncommitted.
-- [todo — Shawn's] Delete or deliberately keep the tag **`v1.0`** — a 2018 predecessor tag on
-  `6b88f31`, already pushed, and a live match for `publish.yml`'s `v*` trigger.
-- [todo — Shawn's] Decide where the architecture record lives: a local doc here, or a pointer from
-  `AGENTS.md` to the backup repo's spine. My recommendation was the pointer, on the grounds
-  that duplicating 29 invariants across three repos guarantees drift. Not decided.
-- [todo — Shawn's] FR-23 — second credential provider. Not implemented; only AWS. Recommendation
-  changed from Azure Key Vault to a **dependency-free env-var provider**, which proves the
-  interface is not AWS-shaped without adding an SDK.
-- [todo — Shawn's] FR-29 — correlation identifier. Not implemented. Either build it or retire it
-  deliberately; review argued it adds little for a single-threaded six-statement fan-out, but
-  nobody made that call.
-- [done 2026-10-12, `0c4e3cf`] FR-48 — no check that `requires-python` and the CI matrices agree. Three hand-kept
-  copies of one fact; a global-rule-#4 violation.
-- [done 2026-10-12, `57a9c77`] FR-50 — no scripted name-conflict release gate. The release path relies on memory,
-  which the requirement forbids.
-- [done 2026-10-12, `cc107fb`] FR-45 — no `security-audit` workflow. Nothing scans dependencies or the lock.
-- [done 2026-10-12, `bb89bba`] G5 — **no MySQL 9.x test leg**, and 9.x is the generation FR-8/FR-9 exist for, since
-  9.0 removed `mysql_native_password`. Cheapest coverage gain available.
-- [blocked] **Any PyPI release.** `l3io-wp-config` is tagged, released and mirrored to the
-  internal Gitea registry but is **not resolvable from PyPI** — a GitHub Release is not an
-  index. Publishing this package while that holds makes
-  `pip install l3io-wordpress-database[wpconfig]` unresolvable, reproducing the exact outage this
-  rewrite repairs. Family invariant AD-15. Publication goes bottom-up: config, then database,
-  then backup.
-- [stale — corrected 2026-10-12] Nothing is published anywhere. **False since 2026-09-30:**
-  `v0.0.1` (built as `l3io-wp-database`) and `v0.0.2` are GitHub Releases and are on the Gitea
-  `liquidlogiclabs` index. Still true: nothing on PyPI or TestPyPI. Original text follows. `publish.yml` is registered and dispatchable but
-  has never run; `l3io-wordpress-database` returns 404 from the Gitea index. Release is Shawn's call,
-  not an agent's. The first run should target `mirror` — Gitea packages are deletable, PyPI
-  burns a filename permanently.
+## Remote housekeeping (plan 3, Task 13 — after the merge, each step confirmed by Shawn)
 
-## Corrections the next session inherits — and which I re-tested myself
+1. `git push origin legacy/main`
+2. `git push origin main`, then watch CI to completion.
+3. `gh api -X POST repos/ravensorb/l3io-wordpress-database/branches/dev-1.0.1/rename -f new_name=legacy/dev-1.0.1`
+4. Delete tag `v1.0` on GitHub and locally.
+5. `gh release delete v0.0.1 --repo ravensorb/l3io-wordpress-database --yes` (the tag stays).
+6. Delete the Gitea package `l3io-wp-database` 0.0.1 in org `liquidlogiclabs`.
 
-The peer session asking for this handoff was right that these matter more than the findings,
-because you inherit my conclusions without my evidence. Stated precisely:
+## Releasing 0.1.0 (Shawn's, in this order — AD-15)
 
-- [done] **"act switches to a bridge network when services exist, so services resolve by
-  service label" — FALSE.** act defaults to `--network host`, so services are on `127.0.0.1`
-  and a label fails DNS outright. **I re-tested this myself, both ways**: `DB_HOST=db` fails
-  every integration test; leaving it unset passes all of them.
-- [done] **`setup-uv@v10` cannot resolve anywhere** — astral-sh publishes no floating major
-  past v7; v8/v9/v10 exist only as exact versions. **I verified this myself** with
-  `git ls-remote`, and saw the act run fail with `couldn't find remote ref "v10"` before
-  pinning `v10.1.0`. Applies to GitHub Actions too, not just act.
-- [done 2026-10-12] **MariaDB floor is 10.2, not 10.1** — re-tested against real servers:
-  10.1.48 fails 6 of 13 on `ALTER USER` (`ERROR 1064`), 10.2.44 passes all 13, and 10.2 is
-  now a CI leg. Original caveat follows. — `CREATE USER IF NOT EXISTS` works on 10.1.48
-  but `ALTER USER` fails with `ERROR 1064`, and the sequence needs both. **I did NOT re-test
-  this myself.** It came from a feasibility-review subagent, and I propagated it into NFR-4,
-  the shared KB note and two peer sessions on that basis. My own integration runs used MariaDB
-  11.4, well above either candidate floor, so nothing in this repo's suite exercises 10.1 or
-  10.2. **Re-verify before relying on it.**
+1. `l3io-wordpress-config` reaches PyPI.
+2. Here, delete `[tool.uv.sources]` from `pyproject.toml` and relock.
+3. Register the PyPI and TestPyPI trusted publishers under `l3io-wordpress-database` for
+   `publish.yml`.
+4. `make release minor`: dispatches `release.yml`, which tags `v0.1.0`; `publish.yml` then
+   builds, smoke-tests, mirrors to Gitea and creates the GitHub release.
+5. `gh workflow run publish.yml -f target=testpypi`, then install from TestPyPI on every
+   supported Python.
+6. `gh workflow run publish.yml -f target=pypi`.
+7. `uv build tombstone/wpdatabase2 --out-dir /tmp/wpdatabase2-dist`, then
+   `uv publish /tmp/wpdatabase2-dist/*` with a PyPI token scoped to `wpdatabase2`.
 
-Others worth knowing, all of which I did confirm directly:
+## Open decisions (Shawn's)
 
-- [done] The PRD's §2 once claimed `ERROR 1064` was reproduced through the code path. It is
-  not reachable there — the old driver fails on `caching_sha2_password` first. Corrected.
-- [done] My own tests were wrong twice, and the code right: a fresh site reports
-  `authentication_failed`, never `database_absent` (the server authenticates before resolving
-  the database — family invariant AD-29); and `db_version` 58975 maps to WordPress **6.7**,
-  the release that *introduced* the schema, not 6.8 which also reports it.
-- [done] My first PRD reconciliation pass was **not uniform** — some sections swept, others
-  untouched — which is worse than marking nothing, because a reader who trusts the loud
-  markers reads the silent gaps as verified. A rubric review caught it; the second pass fixed
-  it. If you reconcile anything here, do it section by section to completion.
+- A second built-in credential source. Recommendation: a dependency-free
+  environment-variable source, which shows the interface is not AWS-shaped.
+- Whether this repository gets floating `v<major>`/`v<major>.<minor>` tags. The tag
+  filter and the notes lower bound are already in place for them.
+- A `CLAUDE.md` agent block (`/l3io-doctor` check 24 reports it missing).
+- Public visibility of the `liquidlogiclabs` Gitea org.
 
-## One trap that gets checks deleted rather than fixed
+## Requests to the family (spec §15)
 
-Verifying "no development dependency source leaked into a release" by grepping a wheel's
-`METADATA` for a hostname reports a leak on a **completely clean artifact** — `Project-URL`
-entries and the README carried in the long description both legitimately contain `github.com`.
-Two sessions hit this independently. The check must inspect `Requires-Dist` **lines** for
-`git+`, `@ git`, `file://` or `@ http(s)://`. `tools/check_dist_metadata.py` does it that way
-and says why in its docstring; do not "simplify" it into a grep.
+**`l3io-wordpress-backup`** — not yet delivered:
+- supersede ADR-0006 with `age` via `pyrage`;
+- move ownership of AD-7 and ADR-0003 (credentials to a subprocess) to this package,
+  whose mechanism is the pipe option file;
+- Story 2.1 calls `dump`;
+- Story 2.4's argument-vector and option-file criteria are met here;
+- Story 3.4 uses `survey` and `EnsureResult`;
+- Story 3.5 uses `ensure` for the staging database, `load(replace=)`, and
+  `drop_database` for the database that loses the cutover;
+- Story 5.1 composes `CredentialChain`;
+- the spine's note that provisioning has exactly one implementation names this
+  package and includes destruction;
+- the `database` extra re-pins once 0.1.0 is on PyPI;
+- the five document defects reported by the config session on 2026-10-12: AD-30 is
+  undefined; AD-24 has no carve-out for AD-2; ADR-0007's script name; ADR-0012's
+  version premise; ADR-0013's description of `make ci`;
+- narrow `publish.yml`'s tag filter to `v*.*.*` and pass `from-tag` to the notes
+  builder, as here and in config.
 
-## Where the durable knowledge lives
+**`l3io-wordpress-config`** — delivered: `v0.1.0` carries the define-parser fix, and this
+package pins it. Still open on config's side: reaching PyPI.
 
-Five notes are already in the shared basic-memory KB under `home-lab` — act behaviour, GitHub
-Actions versioning and matrix traps, Python toolchain traps (uv/ruff/PEP 420), the Gitea
-registry, and MySQL provisioning invariants. Read those rather than rediscovering; this
-handoff deliberately does not repeat them.
-
-Credentials: the Gitea publish credential is a username plus the Gitea token, held in
-Infisical (project id and environment are recorded in `~/.actrc`'s comments and in the KB note
-on the registry). The `PYPI_CUSTOM_USERNAME`/`PASSWORD` pair in Infisical does **not** work
-against `git.ravenwolf.org`. No values anywhere in this repo.
-
-## Inferences, marked as such
-
-- My session name `wordpress-database` is **inferred** from the peer naming convention and
-  confirmed by the agent listing; the filename follows from it.
-- That the architecture record *should* be a pointer rather than a local doc is **my
-  recommendation, not a decision**. Shawn has not ruled.
-- The claim that FR-29's correlation identifier "adds little" is **a reviewer's argument I
-  found persuasive**, not a tested conclusion.
-
----
-
-## Update — 2026-10-12: rename, BMad 3.2.4, and the hardening brief
-
-### Done since 2026-09-27
-
-- [done] **Repository renamed** on GitHub `ravensorb/py-wordpress-database` →
-  `ravensorb/l3io-wordpress-database` (GitHub redirects the old URL), and the local folder to
-  `l3io-wordpress-database`. `a62958d` moves the live references: project URLs, the
-  `l3io-wordpress-config` uv git source (now `ravensorb/l3io-wordpress-config.git`, still
-  `tag = "v0.0.2"`, still commit `1cf1894`), `uv.lock`, act events, BMad `project_name`.
-- [done] l3io 3.2.4 was already committed (`d20c419`). `2895ed1` self-installs
-  `_bmad/scripts/pm-status.py` 3.4.2, which the module upgrade had left at 3.2.1. All three
-  repos now carry the same copy.
-- [done] **Verified 2026-10-12 after the rename**, on a fresh `uv sync --locked --all-extras --dev`:
-  `pytest` 107 passed, 13 skipped (integration, no `DB_HOST`);
-  `../l3io-wordpress-backup/scripts/check-cicd-alignment.py` 3 repos, 0 findings.
-- [done 2026-10-14] **Push.** `main` was 3 commits ahead of `origin/main`, last green GitHub CI
-  `70aa7a0`. Pushed with plan 2 (`70aa7a0..81fb7ec`); see the plan 2 update below.
-
-### Known stale in this file and in `AGENTS.md`
-
-- The "commit and push three uncommitted changes … tag `v1.5.0`" item above is superseded:
-  the pin is `tag = "v0.0.2"`, committed.
-- `AGENTS.md` and the sibling names above still say `l3io-wp-config` / `l3io-wp-backup` and
-  "pinned to a git rev". The distributions are `l3io-wordpress-config` /
-  `l3io-wordpress-backup`, and the pin is a tag. `AGENTS.md`'s block is managed by
-  `bmad-project-context`; refresh it rather than hand-editing inside the markers.
-
-### This session's brief
-
-Shawn's goal: make this package **rock solid and stable**. It is release 2 of 3; config goes
-first. Suggested order:
-
-1. `/l3io-doctor`, then reconcile this file against the repo. Everything tagged above
-   predates 2026-10-12.
-2. Close the open `[todo]` items that are mechanical gaps under the global rules:
-   **FR-48** (`requires-python` vs CI matrices, three hand-kept copies), **FR-50** (scripted
-   name-conflict release gate), **FR-45** (no dependency/lock audit), and **G5** (no MySQL 9.x
-   leg).
-3. Re-test the **MariaDB 10.2 floor** before encoding it anywhere; it is still unverified.
-4. Decisions that stay Shawn's: FR-23 (second credential provider), FR-29 (correlation id;
-   build or retire), the legacy `v1.0` tag, the retired-name `v0.0.1` assets, and the
-   architecture-record location.
-
-### Notes for this session
-
-- Secrets: Infisical, project **`home-lab-discovery`**; this machine has a machine identity
-  configured and the session is approved to read from it. Pass `--env=prod`; without it
-  `infisical secrets get` returns empty with exit 0.
-- Legacy PyPI `wpdatabase2` 0.0.15 is ours and still links the old URL, which redirects.
-  Its tombstone plan is in
-  `../l3io-wordpress-backup/_bmad-output/implementation-artifacts/handoffs/04-legacy-names-and-registrations.md`.
-- PyPI trusted publishing binds owner/repo/workflow. `l3io-wordpress-database` does not exist
-  on PyPI or TestPyPI (checked 2026-10-12), so register any publisher under the **new** name.
-
----
-
-## Update — 2026-10-12, later: hardening pass
-
-Commits `0c4e3cf`..`bcdd118` on `main`, **not pushed** (asked, not done). Every gate passes:
-`make check` 128 passed / 13 skipped; `make ci-dryrun` resolves every action ref, the four
-new security-audit legs included; `security-audit.yml` ran clean under act;
-`check-cicd-alignment.py` 3 repos, 0 findings.
-
-- [done] `/l3io-doctor`: PM state tree empty and clean. One Low, on-request finding: no
-  agent instruction block for the `claude` runtime (`sync-agent-instructions --check` exit 1).
-  Not run; it would write `CLAUDE.md`.
-- [done] FR-48, FR-50, FR-45 and G5, plus the MariaDB floor. See State above and the
-  memlog entries dated 2026-10-12 for the reasoning behind each choice.
-- [done] **Defects found that nothing checked**, all left over from the 3da6f38 rename:
-  `make verify-wheel` invoked the retired console script and **failed on `main`**; the
-  wpconfig extra's `MissingDependencyError` told users to install `l3io-wp-config`;
-  `docs/migration.md` linked the moved `CHANGELOG.md`. `tests/test_declared_facts.py` now
-  fails on the first two classes. **Nothing checks Markdown links.**
-- [done 2026-10-14, run `38642496120`] **Push**, then confirm the five-engine matrix on GitHub.
-  All 26 CI jobs passed on `81fb7ec`, including the 9.7 and 10.2 legs on Python 3.11–3.13 and
-  the transfer job on all five engines; the security audit passed too.
-- [done] `AGENTS.md` refresh approved and applied: sibling names, rev→tag, and the
-  `__init__.py` caveat (now caught in this repo alone). Provenance: 2026-10-12 against
-  `6c8c423`.
-- [todo — Shawn's] **3.14 support, family-wide.** Config's matrices run 3.11–3.14 but its
-  classifiers stop at 3.13, so config's port of the FR-48 check fails until Shawn decides.
-  Database runs 3.11–3.13 and agrees with itself.
-- [todo — Shawn's] unchanged: FR-23, FR-29, tag `v1.0`, the retired-name `v0.0.1` assets
-  (GitHub release and the Gitea `l3io-wp-database` 0.0.1 package), the architecture-record
-  location, and any PyPI release. The PyPI block is unchanged: `l3io-wordpress-config`
-  still returns 404 from PyPI.
-- [inference] The `ubuntu-latest` label moves to Ubuntu 26 from 2026-10-19 (a GitHub
-  annotation on every run). The FR-50 gate runs on the runner's `python3` and needs 3.11+
-  for `tomllib`; Ubuntu 26's default should satisfy that, but it has not been checked.
-
-The coordination with `wordpress-config` (session `l3io-wordpress-config-8a`): it will port
-FR-45 as-is from `cc107fb`, and FR-48 from `0c4e3cf` once the 3.14 question is settled.
-
-## From `wordpress-config`, 2026-10-12 — delivered by file
-
-The `wordpress-config` session wrote this section at Shawn's request, after this session
-ended before a message could reach it. It approves nothing here; put each item to Shawn.
-Delete the section once it has been acted on or declined. The same text is in
-`../l3io-wordpress-config/docs/handoff/wordpress-config.md`.
-
-1. **Legacy cleanup: config's run, for reference.** This repo's spec (`cfc633e`) already
-   plans the same pattern: `legacy/main`, then `dev-1.0.1` → `legacy/dev-1.0.1`, then
-   delete. Config did it as follows:
-   - **Backup:** a `git bundle --all`, verified, plus a test clone; the retired-name
-     release files saved; a tag→commit list.
-   - **Branches:** `legacy/pre-cleanup` at `main`'s tip, with a `LEGACY.md` recording every
-     retired ref and its SHA; `dev2` → `legacy/upstream-2019`.
-   - **Checks before deleting:** every legacy tag was an ancestor of `main` or on a legacy
-     branch, and no sibling pinned one. This repo's `v0.0.2` pin on config is untouched.
-   - **Deleted:** `v0.0.1` (release and tag), `v0.3`–`v1.4`, and `dev2`. Kept `v0.0.0`
-     and `v0.0.2`.
-   - **`main`'s docs** describe the current package only; `LICENSE` keeps the original
-     copyright line.
-
-   The permission classifier blocked the deletions until Shawn approved them explicitly.
-   Reference: `LEGACY.md` on config's `legacy/pre-cleanup`, and config commit `3b74f6d`.
-   Config named its snapshot `legacy/pre-cleanup`; this repo's spec says `legacy/main`.
-   Either is fine, but the family may want one name.
-2. **Floating tags.** Config maintains `v<major>`/`v<major>.<minor>` as backup does
-   (config `db7625d`). It also narrowed `publish.yml`'s push filter from `v*` to
-   `['v*.*.*', '!v0.0.0']`, so a floating tag can never start a publish. If this repo
-   enables floating tags, do the same; the guards are in config's
-   `tests/test_workflow_gates.py`.
-3. **Next config release.** This repo pins config's `v0.0.2`. When config releases
-   (`0.1.0` suggested; not yet decided):
-   - repin to the new tag;
-   - add a test that reads a `DB_PASSWORD` containing `);`, since config's parser fix for
-     such values only arrives through that repin.
-
-   This repo's suite already passes against config's development build: 128 passed, and
-   13 skipped for want of MySQL.
-
----
-
-## Update — 2026-10-13: plan 1 (core API) complete on `feat/plan-1-core-api`
-
-Spec `_bmad-output/planning-artifacts/spec/2026-10-12-l3io-wordpress-database-design.md`
-(amended); plan `_bmad-output/planning-artifacts/plans/2026-10-12-plan-1-core-api.md`.
-Branch is local, not pushed; local branch `legacy/main` preserves the pre-cleanup `main`.
-
-- [done] Tasks 0–15 and a whole-branch review (1 critical, 7 important, all fixed with
-  failing-first tests, `f3d89e5`). `make check` 254 passed; integration 40/40 on MySQL 8.4
-  and MariaDB 11.4; `make ci` all five jobs; alignment 0 findings.
-- [note] Shawn's BMad-upgrade commits `660fdfd` and `0ea13a0` swept in this branch's
-  in-progress `inspection.py` and `provision.py`; the code at HEAD is reviewed and correct,
-  only the attribution is off. History not rewritten.
-- [todo — plan 3] coverage floor (§13); every-code-emitted check; the three items from the
-  wordpress-config note above.
-
-### Open deferred minors (carry into plans 2–3)
+## Open deferred minors
 
 - `Finding.fields` is a `MappingProxyType`: `Finding`/`Verdict`/`RefusedError` cannot be
-  pickled, deep-copied or hashed.
-- `grantee()` does not double `'`; a user name containing `'` re-grants every run — forbid
-  `'` in `validate_user_name`.
+  pickled, deep-copied or hashed. `TransferError` cannot be pickled either; its docstring
+  states a caller duty as a guarantee.
 - A more specific host account (`'u'@'localhost'`) can shadow `'%'` and break idempotence.
 - Role-held admin privileges: grant rows may be invisible (`granted=True` every run);
   `PRIVILEGES_UNVERIFIED` is tested only with a fake cursor.
@@ -304,51 +116,17 @@ Branch is local, not pushed; local branch `legacy/main` preserves the pre-cleanu
   every post-connect error to `AccessDeniedError`.
 - `ensure` can leak the admin session when the user name is invalid (validated after the
   preflight); `check_ensure` does not validate `charset`/`collation`.
-- Spec/code disagreements: §7.2 says `CREATE USER IF NOT EXISTS` (code: `CREATE USER`);
-  §9 names `--admin-user-env`/`--db-user-env` (CLI takes the user name as a value).
 - `_looks_live` skips a table it cannot read, silently losing `LIVE_WORDPRESS_SITE`.
 - `Connection.from_db_host` rejects `host:/path.sock` and `[::1]:3306` (loud, untested).
 - An unknown `--log-level` silently becomes INFO.
-- `tests/test_facade.py` lists operations by hand (global rule 4).
+- `tests/test_facade.py` lists operations by hand.
 - Survey: validates the user name after connecting; a non-integer `db_version` raises
   `AccessDeniedError` and aborts survey; `table_count` counts views.
 - Observability: a refusal marks the span ERROR while the log says "refused";
   `set_tracer_provider` at test-module import; `except BaseException` labels interrupts
   "failed".
-- Test gaps: `Connection(host="")`, `from_db_host(":3307")`, bool port; `classify()`
-  fallback; `_ensure_facts` error translation; `duration_ms` on refused/failed events;
-  mutating a caller dict after `Finding` construction.
-- Leftover `# tests/<file>.py` header comments copied from plan briefs.
-
----
-
-## Update — 2026-10-14: plan 2 (export, import, encryption) merged to `main`
-
-Plan `_bmad-output/planning-artifacts/plans/2026-10-13-plan-2-transfer.md`; spec amended
-(§6, §7.3, §9, §10, §13, §16 V1–V8). Commits `9aef17c`..`d1f8eb1`, fast-forwarded into `main`
-locally and pushed 2026-10-14 (GitHub CI run `38642496120`: all 26 jobs green).
-
-- [done] Tasks 0–11, each reviewed; a whole-branch review (0 critical, 2 important, both fixed
-  in `3cabe3c` and `d1f8eb1`: a dropped dump stream now kills and reaps its tool, and a dump's
-  span is never left as the caller's current span). `make check` passes; `make
-  test-transfer` on mysql 8.0/8.4/9.7 (21 passed) and mariadb 10.2/11.4 (20 passed, 1
-  MySQL-only skip); integration 40/40 on MySQL 8.4; `make ci` all jobs; alignment 0 findings.
-- [ruling] A connection value whose option-file form exceeds 1024 UTF-8 bytes, or that is not
-  UTF-8, is refused: MariaDB's option reader splits long lines, which lets a value inject
-  options.
-- [ruling] MySQL 8.1–8.3 clients have no `--no-login-paths`; accepted (end-of-life, not in the
-  matrix).
-- [ruling] A dump still running at interpreter exit is killed by its finalizer and logged
-  `failed`; a stream dropped after its last byte but before `StopIteration` also logs `failed`.
-- [todo — plan 3] The plan's integration readiness snippet pings over the Unix socket and gets
-  the image's init server; it needs `-h127.0.0.1`.
-
-### Open deferred minors from plan 2
-
-- Transfer tests: the Makefile `EXIT` trap does not fire on Ctrl-C under dash, leaking the
-  container on port 33399; the readiness loop falls through silently after 90 tries and
-  hard-codes `root`/`root`; no `docker logs` on failure; apt debconf noise.
-- `TransferError` cannot be pickled; its docstring states a caller duty as a guarantee.
+- Transfer tests: the readiness loop falls through silently after 90 tries and hard-codes
+  `root`/`root`; no `docker logs` on failure; apt debconf noise.
 - `_client`: `option_pipe` leaks its read fd if `os.write` raises; allow-listed value options
   pass in bare form and can swallow the database positional (require `=`); MySQL 5.7-style
   version banners are not recognised; `ClientTool.label` (and `TransferResult.tool`) repeats
@@ -371,10 +149,33 @@ locally and pushed 2026-10-14 (GitHub CI run `38642496120`: all 26 jobs green).
   close it.
 - CLI: a persistent stdout flush failure still exits 120 at shutdown; `_emit` is typed `Any`;
   `_restore_structlog` belongs in `conftest.py`.
-- Test gaps: the subprocess scope guard misses aliased imports, `os.system`, `posix_spawn`
-  and asyncio; the stream-form dump is compared only by INSERT count; the sandbox test never
-  asserts the 10.2 refusal fires first and keys on the exact tag; the views test creates no
-  trigger; the truncated-dump test does not assert the target stayed empty; login-file
-  controls skip by engine string rather than tool family; the memory test is weak (the
-  chunk-size assertion is the real proof); no `BrokenPipeError` passthrough test in
-  `decrypt`; the password-option test should also match "passphrase".
+- Test gaps: `Connection(host="")`, `from_db_host(":3307")`, bool port; `classify()`
+  fallback; `_ensure_facts` error translation; `duration_ms` on refused/failed events;
+  mutating a caller dict after `Finding` construction; the subprocess scope guard misses
+  aliased imports, `os.system`, `posix_spawn` and asyncio; the stream-form dump is compared
+  only by INSERT count; the sandbox test never asserts the 10.2 refusal fires first and keys
+  on the exact tag; the views test creates no trigger; the truncated-dump test does not
+  assert the target stayed empty; login-file controls skip by engine string rather than tool
+  family; the memory test is weak; no `BrokenPipeError` passthrough test in `decrypt`; the
+  password-option test should also match "passphrase".
+- Leftover `# tests/<file>.py` header comments copied from plan briefs.
+
+## Cautions
+
+- Never publish: not PyPI, TestPyPI, the Gitea registry or the tombstone. Releases are
+  Shawn's. Any remote change is confirmed by Shawn immediately before it runs.
+- Never enumerate HTTP methods against a registry to find a delete endpoint.
+- Prove every check by planting the failure it exists to catch; a check that has never
+  failed proves nothing.
+- Under act, services are on `127.0.0.1`, not the service label (act runs `--network host`).
+- When pinging a database container for readiness, use `-h127.0.0.1`: over the Unix socket
+  the image's temporary setup server answers first.
+- Checking a wheel for a leaked development source means reading its `Requires-Dist` lines
+  for `git+`, `@ git`, `file://` or `@ http(s)://`. Grepping `METADATA` for a hostname
+  reports a leak on a clean artifact (`Project-URL` and the README legitimately contain
+  `github.com`); `tools/check_dist_metadata.py` does it correctly.
+- Secrets come from Infisical, project `home-lab-discovery`, `--env=prod` (without it
+  `infisical secrets get` returns empty with exit 0). `make ci` needs it; never substitute
+  placeholder secrets.
+- [inference] `ubuntu-latest` moves to Ubuntu 26 from 2026-10-19. The name-claim gate runs on
+  the runner's `python3` and needs 3.11+ for `tomllib`; not yet checked on Ubuntu 26.

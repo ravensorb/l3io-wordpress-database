@@ -239,10 +239,11 @@ change something. `EnsureResult` reports `created_database`, `created_user`,
 `password_set` and `granted` as booleans, plus `changed` (any of them) and the
 `Verdict`. A second `ensure` against a converged server reports all four false and
 executes no write. Statements are portable across MySQL 8.0 to 9.x and MariaDB:
-`CREATE USER IF NOT EXISTS`, `ALTER USER` for the password, and `GRANT` without
-`IDENTIFIED BY`. The authentication plugin is never named, so each server uses its
+`CREATE USER` once the administrator's catalog shows the account absent, `ALTER USER`
+for the password, and `GRANT` without `IDENTIFIED BY`. The authentication plugin is never named, so each server uses its
 own default (`mysql_native_password` is absent from MySQL 9). `charset` and `collation`
-cannot be parameterised, so they are restricted to `^[A-Za-z0-9_]+$`. The privilege check
+cannot be parameterised, so they are restricted to `^[A-Za-z0-9_]+$`. A user name may
+not contain `'`: grants are found by comparing against the `'user'@'host'` form. The privilege check
 enumerates what WordPress needs; `GRANT ALL` may expand to further privileges on a given
 server, so an administrator restricted below them passes the check and `ensure` then
 raises `ProvisioningError` naming the steps completed. A rerun after fixing the
@@ -452,23 +453,29 @@ each is wrapped with `raise ... from` (AD-14).
   (AD-15), enforced by a test:
   - core: `PyMySQL[rsa]>=1.2,<2`, `structlog>=26.1,<27`, `opentelemetry-api>=1.30,<2`;
   - `aws`: `boto3>=1.34,<2`;
-  - `wpconfig`: `l3io-wordpress-config>=X,<0.1`, where X is the first config release
-    carrying the define-parser fix (config is pre-1.0, so a minor bump may break);
+  - `wpconfig`: `l3io-wordpress-config>=0.1.0,<0.2`; 0.1.0 is the first config release
+    carrying the define-parser fix, and config is pre-1.0, so a minor bump may break;
   - `encryption`: `pyrage>=1.4,<2`.
 
   The `rsa` extra of PyMySQL is required for `caching_sha2_password` over a non-TLS
   connection, which is exactly the first-provisioning path.
 - **Installation is verified per extra:** CI installs the built wheel, bare and with
   each extra, into an isolated environment, and imports what each extra enables. The
-  bare install must not pull any optional dependency.
+  bare install must not pull any optional dependency. Until config is on PyPI, the
+  `wpconfig` leg takes `l3io-wordpress-config` from its GitHub release wheel; the
+  extra's own specifier must still accept that version.
+- **Release tags:** `publish.yml` starts only on three-component tags (`v*.*.*`, never
+  the `v0.0.0` baseline), and release notes start from the previous three-component
+  tag, so a floating `v<major>` or `v<major>.<minor>` tag never starts a publish or
+  bounds the notes.
 - **Publication order** (AD-15): config reaches PyPI with its parser fix; this package
   re-pins to that release and drops its git source; 0.1.0 is rehearsed on TestPyPI,
   then published to PyPI by deliberate dispatch through a trusted publisher
   registered under `l3io-wordpress-database`. `tools/check_name_claim.py` and
   `tools/check_dist_metadata.py` gate every upload.
 - **Legacy name:** a single `wpdatabase2` 0.0.16 tombstone, with no dependencies,
-  whose README and import error point to `l3io-wordpress-database`. `wpdatabase` is
-  not registered.
+  whose README and import error point to `l3io-wordpress-database`. Its source is
+  `tombstone/wpdatabase2/`. `wpdatabase` is not registered.
 
 ## 13. Verification
 
@@ -516,7 +523,10 @@ command once per engine, and a developer runs the same command locally.
 - `check_dist_metadata`, `check_name_claim`, `test_declared_facts`, `test_act_workspace`;
 - dependency audit (`security-audit.yml`, `make audit`).
 
-A coverage floor is enforced in CI.
+A coverage floor of 87% line coverage is enforced on every CI run that measures
+coverage. `tests/test_codes_asserted.py` is the every-code check;
+`tests/test_readme.py` and `tests/test_current_only.py` keep the documentation
+honest.
 
 ## 14. Documentation and retirement of the predecessor
 
@@ -551,7 +561,8 @@ This package is the only version. Its documentation describes only it.
 - delete tag `v1.0`, locally and on GitHub;
 - delete the GitHub release `v0.0.1` (the tag stays);
 - delete the Gitea package `l3io-wp-database` 0.0.1 (org `liquidlogiclabs`);
-- publish the `wpdatabase2` tombstone (section 12).
+- publish the `wpdatabase2` tombstone (section 12): Shawn's step, after 0.1.0 is on
+  PyPI.
 
 ## 15. Requests to the family
 

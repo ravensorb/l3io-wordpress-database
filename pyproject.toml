@@ -127,6 +127,9 @@ git_describe_command = "git describe --dirty --tags --long --match v[0-9]*.[0-9]
 [tool.hatch.build.targets.wheel]
 packages = ["src/l3io"]
 
+[tool.hatch.build.targets.sdist]
+only-include = ["src/l3io", "README.md", "LICENSE"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

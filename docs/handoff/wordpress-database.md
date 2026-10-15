@@ -160,6 +160,15 @@ package pins it. Still open on config's side: reaching PyPI.
   family; the memory test is weak; no `BrokenPipeError` passthrough test in `decrypt`; the
   password-option test should also match "passphrase".
 - Leftover `# tests/<file>.py` header comments copied from plan briefs.
+- `tools/verify_extras.sh`: the aws leg does not exercise the lazy `boto3` import; the
+  forbidden-import check matches the module name anywhere in the output rather than only
+  the "base install pulled" line.
+- `publish.yml`: the `previous` step's comment says the tag is empty on the first release,
+  but `v0.0.0` always matches; an empty value should fail or fall back explicitly.
+- `'` is refused in user names but not checked in `user_host` or the admin's
+  `CURRENT_USER()` (`server.py`).
+- The README does not say that MySQL 8.0 and MariaDB 10.2 are refused as
+  `END_OF_LIFE_SERVER`; `tests/test_readme.py` does not guard attribute names.
 
 ## Cautions
 

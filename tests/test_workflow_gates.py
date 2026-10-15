@@ -81,3 +81,16 @@ def test_release_notes_never_start_from_a_floating_tag() -> None:
     assert previous is not None, "no step with id 'previous' computes the lower bound"
     assert "--match 'v[0-9]*.[0-9]*.[0-9]*'" in str(previous.get("run", ""))
     assert steps.index(previous) < steps.index(builder)
+
+
+def test_an_index_upload_runs_only_on_a_release_tag() -> None:
+    """A dispatch from a branch would upload a .dev build, and PyPI burns the filename."""
+    jobs: dict[str, Any] = _load(WORKFLOWS / "publish.yml").get("jobs") or {}
+    uploads = [
+        name
+        for name, job in jobs.items()
+        if any("pypa/gh-action-pypi-publish" in str(s.get("uses", "")) for s in job["steps"])
+    ]
+    assert uploads, "publish.yml uploads to no index -- this check is vacuous"
+    ungated = [n for n in uploads if "startsWith(github.ref, 'refs/tags/v')" not in jobs[n]["if"]]
+    assert not ungated, f"{ungated} can upload from a branch ref"

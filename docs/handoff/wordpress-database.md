@@ -64,9 +64,10 @@ repositories; message them.
    `publish.yml`.
 4. `make release minor`: dispatches `release.yml`, which tags `v0.1.0`; `publish.yml` then
    builds, smoke-tests, mirrors to Gitea and creates the GitHub release.
-5. `gh workflow run publish.yml -f target=testpypi`, then install from TestPyPI on every
+5. `gh workflow run publish.yml --ref v0.1.0 -f target=testpypi`, then install from TestPyPI on every
    supported Python.
-6. `gh workflow run publish.yml -f target=pypi`.
+6. `gh workflow run publish.yml --ref v0.1.0 -f target=pypi`. Both upload jobs refuse
+   any ref but a release tag.
 7. `uv build tombstone/wpdatabase2 --out-dir /tmp/wpdatabase2-dist`, then
    `uv publish /tmp/wpdatabase2-dist/*` with a PyPI token scoped to `wpdatabase2`.
 

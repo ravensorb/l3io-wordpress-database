@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wpdatabase2"
+version = "0.0.16"
+description = "Retired. Install l3io-wordpress-database instead."
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+authors = [{ name = "Shawn Anderson" }]
+classifiers = [
+  "Development Status :: 7 - Inactive",
+  "Programming Language :: Python :: 3",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/ravensorb/l3io-wordpress-database"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wpdatabase2"]

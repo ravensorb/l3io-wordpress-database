@@ -19,8 +19,8 @@ HISTORY = re.compile(
     r"|\bN?FR-\d+\b|\bPRD\b|\bG5\b|\b(?:the|this) rewrite\b|Cariad|original package",
     re.IGNORECASE,
 )
-#: Planning records and the session handoff may name history; the tombstone exists
-#: to name the retired package; this file names the patterns.
+#: Planning records and the session handoff may name history; the tombstone and its
+#: test exist to name the retired package; this file names the patterns.
 ALLOWED = (
     "_bmad/",
     "_bmad-output/",
@@ -30,6 +30,7 @@ ALLOWED = (
     "tombstone/",
     "uv.lock",
     "tests/test_current_only.py",
+    "tests/test_tombstone.py",
 )
 
 

@@ -55,13 +55,12 @@ repositories; message them.
    87% coverage floor met on every leg. The security audit passed.
 3. Done: `dev-1.0.1` is renamed `legacy/dev-1.0.1`.
 4. Done: tag `v1.0` is deleted on GitHub and locally.
-5. Done: the GitHub release `v0.0.1` is deleted; its tag stays.
-6. **Open (Shawn's):** delete the Gitea package `l3io-wp-database` 0.0.1 at
-   <https://git.ravenwolf.org/liquidlogiclabs/-/packages/pypi/l3io-wp-database/0.0.1>.
-   The agent's Gitea token lacks `write:package`, so the API refused.
-
-Not in this plan, left untouched: the GitHub release `v0.0.2` (marked Latest) and the Gitea
-package `l3io-wordpress-database` 0.0.2.
+5. Done: the GitHub releases `v0.0.1` and `v0.0.2` are deleted; their tags stay. GitHub has
+   no release until 0.1.0.
+6. **Open (Shawn's):** delete two Gitea packages in the web UI; the agent's Gitea token
+   lacks `write:package`, so the API refused both:
+   - <https://git.ravenwolf.org/liquidlogiclabs/-/packages/pypi/l3io-wp-database/0.0.1>
+   - <https://git.ravenwolf.org/liquidlogiclabs/-/packages/pypi/l3io-wordpress-database/0.0.2>
 
 ## Releasing 0.1.0 (Shawn's, in this order — AD-15)
 

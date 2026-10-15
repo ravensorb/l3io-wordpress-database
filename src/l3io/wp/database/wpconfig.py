@@ -21,6 +21,8 @@ Three properties of the upstream API matter enough to state:
 
 from __future__ import annotations
 
+import re
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,28 @@ from .errors import (
 
 #: WordPress's own default when ``$table_prefix`` is not set.
 DEFAULT_TABLE_PREFIX = "wp_"
+
+#: The ``l3io-wordpress-config`` releases this adapter accepts: the ``wpconfig``
+#: extra's specifier, which tests/test_wpconfig.py holds equal. An earlier release
+#: truncates a quoted value containing ``);``, and ``ensure`` would then set the
+#: account's password to the truncated value. Only an install through the extra
+#: enforces the range, so it is checked again here.
+REQUIRED_CONFIG = ">=0.1.0,<0.2"
+_CONFIG_FLOOR, _CONFIG_CEILING = (0, 1, 0), (0, 2, 0)
+
+
+def _accepts(version: str) -> bool:
+    match = re.match(r"\d+(?:\.\d+)*", version)
+    release = tuple(int(part) for part in match.group().split(".")) if match else ()
+    release += (0,) * (3 - len(release))
+    return _CONFIG_FLOOR <= release < _CONFIG_CEILING
+
+
+def _installed_config_version() -> str | None:
+    try:
+        return metadata.version("l3io-wordpress-config")
+    except metadata.PackageNotFoundError:
+        return None
 
 
 class WpConfigFile:
@@ -55,6 +79,14 @@ class WpConfigFile:
             raise MissingDependencyError(
                 extra="wpconfig", distribution="l3io-wordpress-config"
             ) from exc
+        installed = _installed_config_version()
+        if installed is not None and not _accepts(installed):
+            raise MissingDependencyError(
+                extra="wpconfig",
+                distribution="l3io-wordpress-config",
+                found=installed,
+                required=REQUIRED_CONFIG,
+            )
         self._missing = MISSING
         try:
             self._config: Any = _Upstream(filename=self._path)

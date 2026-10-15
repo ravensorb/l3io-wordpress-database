@@ -41,14 +41,29 @@ class MissingDependencyError(DatabaseError):
     """An optional feature was used without its extra installed.
 
     AD-8: optional dependencies are imported inside the function that needs
-    them, and their absence is reported by naming the extra to install.
+    them, and their absence is reported by naming the extra to install. A
+    version outside the extra's range is reported the same way, with ``found``
+    set to the installed version.
     """
 
-    def __init__(self, extra: str, distribution: str) -> None:
+    def __init__(
+        self,
+        extra: str,
+        distribution: str,
+        *,
+        found: str | None = None,
+        required: str | None = None,
+    ) -> None:
         self.extra = extra
         self.distribution = distribution
+        self.found = found
+        state = (
+            "which is not installed"
+            if found is None
+            else f"at {required}, and {found} is installed"
+        )
         super().__init__(
-            f"this feature needs {distribution!r}, which is not installed. "
+            f"this feature needs {distribution!r}, {state}. "
             f"Install it with: pip install 'l3io-wordpress-database[{extra}]'"
         )
 

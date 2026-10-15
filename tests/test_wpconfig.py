@@ -5,13 +5,16 @@ Skipped when the ``wpconfig`` extra is absent, which is the point of the extra.
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
 
 pytest.importorskip("l3io.wp.config", reason="the wpconfig extra is not installed")
 
-from l3io.wp.database import DEFAULT_TABLE_PREFIX
+from l3io.wp.database import DEFAULT_TABLE_PREFIX, wpconfig
 from l3io.wp.database.connection import Connection
 from l3io.wp.database.credentials import CredentialSource
 from l3io.wp.database.errors import (
@@ -19,6 +22,7 @@ from l3io.wp.database.errors import (
     CredentialsAbsentError,
     CredentialsUnobtainableError,
     MissingConfigValueError,
+    MissingDependencyError,
 )
 from l3io.wp.database.wpconfig import WpConfigFile
 
@@ -109,3 +113,23 @@ def test_a_password_containing_paren_semicolon_is_read_whole(tmp_path: Path) -> 
         "define('DB_PASSWORD', 'ab);cd');\ndefine('DB_HOST', 'localhost');\n",
     )
     assert WpConfigFile(path).resolve().password == "ab);cd"
+
+
+def test_a_config_parser_outside_the_extras_range_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A release before 0.1.0 truncates such a password, and ensure would then set it."""
+    monkeypatch.setattr(wpconfig, "_installed_config_version", lambda: "0.0.2")
+    with pytest.raises(MissingDependencyError) as info:
+        WpConfigFile(write(tmp_path, CONFIG))
+    assert info.value.found == "0.0.2"
+    assert wpconfig.REQUIRED_CONFIG in str(info.value)
+
+
+def test_the_accepted_range_is_the_extras_specifier() -> None:
+    with (Path(__file__).resolve().parent.parent / "pyproject.toml").open("rb") as fh:
+        [requirement] = tomllib.load(fh)["project"]["optional-dependencies"]["wpconfig"]
+    specifier = Requirement(requirement).specifier
+    assert specifier == SpecifierSet(wpconfig.REQUIRED_CONFIG)
+    for version in ("0.0.2", "0.0.9", "0.1", "0.1.0", "0.1.7", "0.2.0", "1.0.0"):
+        assert wpconfig._accepts(version) == (version in specifier), version

@@ -31,6 +31,12 @@ env:
   # writes lands in the host's src/ and tests/, root-owned. Observed: 13 files
   # after one `make ci`. tests/test_act_workspace.py requires this.
   PYTHONDONTWRITEBYTECODE: '1'
+  # The tools' caches default to the tree too: ruff adds a root-owned file for any
+  # file it has not cached, and a fresh clone would get all three directories
+  # root-owned.
+  RUFF_CACHE_DIR: /tmp/l3io-ruff-cache
+  MYPY_CACHE_DIR: /tmp/l3io-mypy-cache
+  PYTEST_ADDOPTS: -p no:cacheprovider
 
 # No UV_FROZEN: uv rejects `--locked` when it is set, and --locked is wanted
 # because it asserts the lockfile is current rather than merely using it.

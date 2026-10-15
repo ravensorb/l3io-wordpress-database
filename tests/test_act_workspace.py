@@ -12,8 +12,11 @@ the Makefile's ``ACT_FLAGS`` rather than listed here. Within them, every
 pytest with ``--cov`` must set ``COVERAGE_FILE`` under ``/tmp`` and write any XML
 report there, and the workflow must set ``PYTHONDONTWRITEBYTECODE``, because the
 first replay with the other two fixed still left 13 root-owned ``.pyc`` files in
-``src/`` and ``tests/``. Other writes (a stray ``open()`` in a step) are not
-covered.
+``src/`` and ``tests/``. The tools' caches are the same hazard: ruff writes a new
+root-owned file into ``.ruff_cache`` for any file it has not seen, and on a fresh
+clone ``.ruff_cache``, ``.mypy_cache`` and ``.pytest_cache`` would all be created
+by root. So the workflow points ruff's and mypy's caches under ``/tmp`` and turns
+pytest's off. Other writes (a stray ``open()`` in a step) are not covered.
 """
 
 from __future__ import annotations
@@ -31,6 +34,13 @@ _ACT_FLAGS = re.compile(r"^ACT_FLAGS\s*\?=\s*(.*)$", re.MULTILINE)
 #: Compared against, never created -- hence the one S108 exemption.
 _SCRATCH = "/tmp/"  # noqa: S108
 _VAR = re.compile(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$")
+#: Tool caches that default to the working tree, each pointed at /tmp by this variable.
+_CACHE_DIRS = ("RUFF_CACHE_DIR", "MYPY_CACHE_DIR")
+#: A workflow env that satisfies every workflow-level rule, for the planted tests.
+_CLEAN_ENV = (
+    "env: { PYTHONDONTWRITEBYTECODE: '1', RUFF_CACHE_DIR: /tmp/r, MYPY_CACHE_DIR: /tmp/m,"
+    " PYTEST_ADDOPTS: -p no:cacheprovider }\n"
+)
 
 
 def replayed_workflows(makefile: Path) -> list[Path]:
@@ -49,8 +59,14 @@ def _resolve(value: str, env: dict[str, Any]) -> str:
 def workspace_writes(workflow: Path) -> list[str]:
     document = yaml.safe_load(workflow.read_text(encoding="utf-8")) or {}
     bad: list[str] = []
-    if str((document.get("env") or {}).get("PYTHONDONTWRITEBYTECODE", "")) != "1":
+    workflow_env: dict[str, Any] = document.get("env") or {}
+    if str(workflow_env.get("PYTHONDONTWRITEBYTECODE", "")) != "1":
         bad.append(f"{workflow.name}: no workflow-level PYTHONDONTWRITEBYTECODE: '1'")
+    for var in _CACHE_DIRS:
+        if not str(workflow_env.get(var, "")).startswith(_SCRATCH):
+            bad.append(f"{workflow.name}: no workflow-level {var} under /tmp")
+    if "no:cacheprovider" not in str(workflow_env.get("PYTEST_ADDOPTS", "")):
+        bad.append(f"{workflow.name}: pytest's cache is not disabled in PYTEST_ADDOPTS")
     for job_id, job in (document.get("jobs") or {}).items():
         job_env: dict[str, Any] = (job or {}).get("env") or {}
         for index, step in enumerate((job or {}).get("steps") or []):
@@ -83,8 +99,7 @@ def test_make_ci_jobs_write_nothing_into_the_working_tree() -> None:
 def test_a_build_into_the_tree_is_caught(tmp_path: Path) -> None:
     planted = tmp_path / "wf.yml"
     planted.write_text(
-        "on: push\nenv: { PYTHONDONTWRITEBYTECODE: '1' }\n"
-        "jobs:\n  b:\n    env: { DIST_DIR: dist-verify }\n    steps:\n"
+        "on: push\n" + _CLEAN_ENV + "jobs:\n  b:\n    env: { DIST_DIR: dist-verify }\n    steps:\n"
         "      - run: uv build --no-sources\n"
         '      - run: uv build --out-dir "$DIST_DIR"\n',
         encoding="utf-8",
@@ -98,8 +113,7 @@ def test_a_build_into_the_tree_is_caught(tmp_path: Path) -> None:
 def test_coverage_into_the_tree_is_caught(tmp_path: Path) -> None:
     planted = tmp_path / "wf.yml"
     planted.write_text(
-        "on: push\nenv: { PYTHONDONTWRITEBYTECODE: '1' }\n"
-        "jobs:\n  t:\n    steps:\n"
+        "on: push\n" + _CLEAN_ENV + "jobs:\n  t:\n    steps:\n"
         "      - run: uv run pytest --cov=x --cov-report=xml\n",
         encoding="utf-8",
     )
@@ -122,4 +136,17 @@ def test_scope_follows_the_makefile(tmp_path: Path) -> None:
 def test_bytecode_written_into_the_tree_is_caught(tmp_path: Path) -> None:
     planted = tmp_path / "wf.yml"
     planted.write_text("on: push\njobs: {}\n", encoding="utf-8")
-    assert workspace_writes(planted) == ["wf.yml: no workflow-level PYTHONDONTWRITEBYTECODE: '1'"]
+    assert workspace_writes(planted)[0] == "wf.yml: no workflow-level PYTHONDONTWRITEBYTECODE: '1'"
+
+
+def test_tool_caches_in_the_tree_are_caught(tmp_path: Path) -> None:
+    planted = tmp_path / "wf.yml"
+    planted.write_text(
+        "on: push\nenv: { PYTHONDONTWRITEBYTECODE: '1', RUFF_CACHE_DIR: .ruff_cache }\njobs: {}\n",
+        encoding="utf-8",
+    )
+    assert workspace_writes(planted) == [
+        "wf.yml: no workflow-level RUFF_CACHE_DIR under /tmp",
+        "wf.yml: no workflow-level MYPY_CACHE_DIR under /tmp",
+        "wf.yml: pytest's cache is not disabled in PYTEST_ADDOPTS",
+    ]

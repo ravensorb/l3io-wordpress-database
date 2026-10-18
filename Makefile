@@ -25,9 +25,11 @@ ACT_FLAGS ?= --var-file .act.vars --concurrent-jobs 1 -W .github/workflows/ci.ym
 # the fetch fails with "authentication required" instead of proceeding
 # anonymously. Verified the hard way.
 INFISICAL ?= infisical
-INFISICAL_PROJECT ?= 45365f20-36e8-4d4d-87f3-1554c5ae0615
+INFISICAL_PROJECT ?= 7ca0e01b-28f6-4a61-b901-5fe834e1661a
 INFISICAL_ENV ?= prod
-ACT_RUNNER ?= $(INFISICAL) run --projectId $(INFISICAL_PROJECT) --env $(INFISICAL_ENV) --
+# This repo's CI leaf in the home-lab project (ADR-0008): /ci/<platform>/<repo>.
+INFISICAL_PATH ?= /ci/act/l3io-wordpress-database
+ACT_RUNNER ?= $(INFISICAL) run --projectId $(INFISICAL_PROJECT) --env $(INFISICAL_ENV) --path $(INFISICAL_PATH) --
 
 .DEFAULT_GOAL := help
 .PHONY: help sync check lint format types test test-db test-transfer contracts namespace-check audit build verify-wheel ci ci-job ci-list ci-dryrun ci-dryrun-one clean

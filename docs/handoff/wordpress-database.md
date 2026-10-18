@@ -190,7 +190,7 @@ package pins it. Still open on config's side: reaching PyPI.
   for `git+`, `@ git`, `file://` or `@ http(s)://`. Grepping `METADATA` for a hostname
   reports a leak on a clean artifact (`Project-URL` and the README legitimately contain
   `github.com`); `tools/check_dist_metadata.py` does it correctly.
-- Secrets come from Infisical, project `home-lab-discovery`, `--env=prod` (without it
+- Secrets come from Infisical, project `home-lab`, path `/ci/act/l3io-wordpress-database`, `--env=prod` (without it
   `infisical secrets get` returns empty with exit 0). `make ci` needs it; never substitute
   placeholder secrets.
 - [inference] `ubuntu-latest` moves to Ubuntu 26 from 2026-10-19. The name-claim gate runs on

@@ -103,33 +103,59 @@ exclusive with recipients/identities) streams sole-scrypt age. Backends:
 Recipients stay on stock PyPI `pyrage`. Images we own install the binder wheel
 and the official age tarball (includes the plugin). See ADR-0003.
 
-**Status:** dual-backend landed. Binder lives at
-https://github.com/ravensorb/l3io-age-passphrase (v0.1.0 GitHub Release with
-multi-platform wheels; PyPI not wired). Dev pin:
-`[tool.uv.sources] l3io-age-passphrase = { git = …, tag = "v0.1.0" }`
-(strip before publish). Docker/images should prefer the manylinux wheel URL
-from the release. Publish database 0.2.0 only once the binder is on a
-non-VCS index (or document wheel URL installs).
+**Status:** dual-backend landed; **released as v0.2.0** (2026-10-27 GitHub
+Release + Gitea mirror; not PyPI). Binder:
+https://github.com/ravensorb/l3io-age-passphrase/releases/tag/v0.1.0.
+Dev pin still git-tags the binder; strip before a PyPI publish.
 
-**For backup (READY — 2026-10-27):** streaming passphrase is on `main` (pushed).
-Prefer package-root imports:
+**For backup:** pin `l3io-wordpress-database[encryption]>=0.2.0,<0.3` (or the
+v0.2.0 GitHub wheel) and install the binder manylinux wheel in images. Package
+root: `encrypt` / `decrypt` / `check_passphrase` / `check_recipients` /
+`generate_identity` with `passphrase=`. See ADR-0003 for
+`L3IO_AGE_PASSPHRASE_BACKEND`.
+
+## Feature: stored `siteurl` / `home` options (pending) — 2026-10-27
+
+Requested by `l3io-wordpress-backup` (Shawn approved). Backup records the
+source site's stored URLs in the archive Manifest (E002-S01-001) and needs
+those exact values as the OLD side of `wp search-replace` on relocation
+(E007-S01-003). A Dry Run loads no Dump; WP-CLI after a config rewrite returns
+NEW values when `WP_HOME` / `WP_SITEURL` constants are set; backup must not
+issue SQL itself (ADR-0015).
+
+**Planned API** (sibling of `schema_version`, not fields on `Survey` — survey
+is the admin overview; this is a targeted options read for backup/relocation):
 
 ```python
-from l3io.wp.database import (
-    encrypt,
-    decrypt,
-    check_passphrase,
-    check_recipients,
-    generate_identity,
-)
+@dataclass(frozen=True, slots=True)
+class SiteUrls:
+    """Values from `{prefix}options`, never constant overrides."""
+
+    siteurl: str | None   # None ⇒ option row absent (table present)
+    home: str | None
+    options_table_present: bool  # False ⇒ `{prefix}options` missing; both URLs None
+
+def site_urls(
+    connection: Connection,
+    credentials: CredentialSource,
+    table_prefix: str = "wp_",
+) -> SiteUrls: ...
 ```
 
-`passphrase=` is mutually exclusive with `recipients=` / `identities=`. Until
-database 0.2.0 is on an index, depend on this repo’s `main` with the
-`encryption` extra; install the binder wheel from
-https://github.com/ravensorb/l3io-age-passphrase/releases/tag/v0.1.0 in images.
-See ADR-0003 for `L3IO_AGE_PASSPHRASE_BACKEND`. Supersede backup ADR-0006 /
-AD-26 with this age path when you pick the work up.
+- Reads `option_name IN ('siteurl','home')` from the quoted `{prefix}options`
+  table (same pattern as `_read_schema_version`).
+- Distinguishes table absence (`options_table_present=False`) from a missing
+  option row (`None` on that field) without raising for either case.
+- Privilege / connect failures stay package errors (`AccessDeniedError` /
+  `AuthenticationFailedError` / `DatabaseUnreachableError`), as
+  `schema_version` does.
+- Exported from the package root and `Database.site_urls(...)` on the facade.
+- Not on `Survey`: keeps the survey stable and avoids forcing every survey
+  caller to care about URL options.
+
+**Status:** planned, not implemented. No urgency — backup Dry Run reports
+planned pairs only until this lands; Manifest keys stay empty. Target a
+minor after 0.2.0 (likely 0.3.0) or a 0.2.x patch if backup needs it sooner.
 
 ## Requests to the family (spec §15)
 

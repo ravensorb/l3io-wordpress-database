@@ -89,7 +89,7 @@ dev = [
   # dependency on it.
   "packaging==26.3",
   # Span assertions need a real SDK; the package itself depends on the API only.
-  "opentelemetry-sdk==1.44.0",
+  "opentelemetry-sdk==1.45.1",
   # The encryption extra, also here because `uv run` prunes extras.
   "pyrage==1.4.0",
   "l3io-age-passphrase>=0.1,<0.2",

@@ -116,7 +116,11 @@ Prefer package-root imports:
 
 ```python
 from l3io.wp.database import (
-    encrypt, decrypt, check_passphrase, check_recipients, generate_identity,
+    encrypt,
+    decrypt,
+    check_passphrase,
+    check_recipients,
+    generate_identity,
 )
 ```
 

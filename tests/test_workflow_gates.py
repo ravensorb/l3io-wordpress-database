@@ -83,6 +83,43 @@ def test_release_notes_never_start_from_a_floating_tag() -> None:
     assert steps.index(previous) < steps.index(builder)
 
 
+def _release_steps() -> list[dict[str, Any]]:
+    steps: list[dict[str, Any]] = []
+    for job in (_load(WORKFLOWS / "release.yml").get("jobs") or {}).values():
+        steps += job.get("steps", [])
+    return steps
+
+
+def _index(steps: list[dict[str, Any]], action: str) -> int:
+    found = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith(action)]
+    assert found, f"release.yml has no step using {action}"
+    return found[-1]
+
+
+def test_floating_tags_move_after_the_release_tag_and_before_the_dispatch() -> None:
+    steps = _release_steps()
+    created = _index(steps, "LiquidLogicLabs/git-action-tag-create-update")
+    floated = _index(steps, "LiquidLogicLabs/git-action-tag-floating-version")
+    dispatched = _index(steps, "LiquidLogicLabs/git-action-trigger-workflow")
+    assert created < floated < dispatched
+
+
+def test_the_latest_release_lookup_ignores_floating_tags() -> None:
+    steps = _release_steps()
+    lookup = steps[_index(steps, "LiquidLogicLabs/git-action-tag-info")]
+    assert lookup.get("with", {}).get("tag-format") == "v*.*.*"
+
+
+def test_github_release_waits_on_publish_pypi_without_failing_when_skipped() -> None:
+    job = (_load(WORKFLOWS / "publish.yml").get("jobs") or {}).get("release") or {}
+    needs = job.get("needs") or []
+    assert "publish-pypi" in needs
+    assert "smoke" in needs
+    condition = str(job.get("if", ""))
+    assert "always()" in condition
+    assert "needs.publish-pypi.result != 'failure'" in condition
+
+
 def test_an_index_upload_runs_only_on_a_release_tag() -> None:
     """A dispatch from a branch would upload a .dev build, and PyPI burns the filename."""
     jobs: dict[str, Any] = _load(WORKFLOWS / "publish.yml").get("jobs") or {}

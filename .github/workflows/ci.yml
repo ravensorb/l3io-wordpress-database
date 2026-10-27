@@ -123,10 +123,14 @@ jobs:
         # Under act the matrix collapses to one representative leg, driven by
         # vars.LOCAL_ACT rather than by `if:` branching -- one code path, two
         # inputs. Not a convenience: act creates every leg's service container
-        # up front and runs the job container with --network host, so nine legs
-        # all try to bind host port 3306 and eight fail with "port is already
+        # up front and runs the job container with --network host, so N legs
+        # all try to bind host port 3306 and N-1 fail with "port is already
         # allocated". --concurrent-jobs 1 does not help, because the allocation
         # happens before any job starts. On GitHub each leg has its own runner.
+        #
+        # Config keeps all four Pythons under act because it has no DB services.
+        # Here each Python × engine cell still gets its own service, so collapsing
+        # the engine alone is not enough -- Python collapses too.
         python: >-
           ${{ vars.LOCAL_ACT && fromJSON('["3.11"]')
               || fromJSON('["3.11","3.12","3.13","3.14"]') }}

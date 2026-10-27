@@ -145,7 +145,12 @@ def _stop(run: _DumpRun) -> None:
         run.notify(TransferError("dump closed before it finished", run.verdict, None, ""))
 
 
-def _start_encryption(run: _DumpRun, recipients: Sequence[str]) -> None:
+def _start_encryption(
+    run: _DumpRun,
+    *,
+    recipients: Sequence[str] | None = None,
+    passphrase: str | None = None,
+) -> None:
     """Encrypt the program's output on a thread; ``run.reader`` becomes the ciphertext."""
     from . import encryption
 
@@ -156,7 +161,10 @@ def _start_encryption(run: _DumpRun, recipients: Sequence[str]) -> None:
 
     def encrypt() -> None:
         try:
-            encryption.encrypt(plaintext, writer, recipients)
+            if passphrase is not None:
+                encryption.encrypt(plaintext, writer, passphrase=passphrase)
+            else:
+                encryption.encrypt(plaintext, writer, recipients or ())
         except BaseException as exc:  # noqa: BLE001 - re-raised on the consumer's thread
             run.error = exc
         finally:
@@ -188,6 +196,7 @@ class DumpStream:
         recipients: Sequence[str] | None,
         password: str,
         on_finish: Any = None,
+        passphrase: str | None = None,
     ) -> None:
         self._run = _DumpRun(process, verdict, on_finish)
         self._tool = tool
@@ -198,8 +207,8 @@ class DumpStream:
         self._done = False
         self.result: TransferResult | None = None
         self._finalizer = weakref.finalize(self, _stop, self._run)
-        if recipients:
-            _start_encryption(self._run, recipients)
+        if recipients is not None or passphrase is not None:
+            _start_encryption(self._run, recipients=recipients, passphrase=passphrase)
 
     @property
     def pid(self) -> int:
@@ -367,9 +376,10 @@ def iter_dump(
     credentials: CredentialSource,
     *,
     recipients: Sequence[str] | None = None,
+    passphrase: str | None = None,
     options: Sequence[str] = (),
 ) -> DumpStream:
-    """The dump as a :class:`DumpStream` of byte chunks (age-encrypted if ``recipients``)."""
+    """The dump as a :class:`DumpStream` of byte chunks (age-encrypted if requested)."""
     # The operation outlives this call: a failure here ends it at once, and
     # success hands it to the stream, which ends it when the dump does.
     running = Running("dump", connection)
@@ -380,7 +390,9 @@ def iter_dump(
 
     try:
         with running.current() as fields:
-            return _start_dump(connection, credentials, recipients, options, fields, finish)
+            return _start_dump(
+                connection, credentials, recipients, passphrase, options, fields, finish
+            )
     except BaseException as exc:
         running.end(exc)
         raise
@@ -390,18 +402,25 @@ def _start_dump(
     connection: Connection,
     credentials: CredentialSource,
     recipients: Sequence[str] | None,
+    passphrase: str | None,
     options: Sequence[str],
     fields: dict[str, object],
     finish: Any,
 ) -> DumpStream:
+    if recipients is not None and passphrase is not None:
+        msg = "supply recipients= or passphrase=, not both"
+        raise InvalidArgumentsError(msg)
+    if recipients is not None or passphrase is not None:
+        from . import encryption
+
+        if passphrase is not None:
+            encryption.check_passphrase(passphrase)
+        else:
+            encryption.check_recipients(recipients or ())
     plan = _dump_plan(connection, credentials, options)
     fields[VERDICT_KEY] = plan.verdict
     if not plan.verdict.ok or plan.tool is None or plan.server is None or plan.credentials is None:
         raise RefusedError(plan.verdict)
-    if recipients is not None:
-        from . import encryption
-
-        encryption.check_recipients(recipients)
     try:
         process = _start(
             plan.tool,
@@ -422,6 +441,7 @@ def _start_dump(
             recipients=recipients,
             password=plan.credentials.password,
             on_finish=finish,
+            passphrase=passphrase,
         )
     except BaseException:
         _abandon(process)
@@ -479,6 +499,7 @@ def dump(
     to: IO[bytes] | str | os.PathLike[str],
     *,
     recipients: Sequence[str] | None = None,
+    passphrase: str | None = None,
     options: Sequence[str] = (),
 ) -> TransferResult:
     """Dump to a writable binary stream, or atomically to a path (mode 0600)."""
@@ -488,13 +509,25 @@ def dump(
     if isinstance(to, (str, os.PathLike)):
         partial = _open_partial(Path(to))
         try:
-            stream = iter_dump(connection, credentials, recipients=recipients, options=options)
+            stream = iter_dump(
+                connection,
+                credentials,
+                recipients=recipients,
+                passphrase=passphrase,
+                options=options,
+            )
         except BaseException:
             partial.discard()
             raise
         _write_atomically(stream, partial)
     else:
-        stream = iter_dump(connection, credentials, recipients=recipients, options=options)
+        stream = iter_dump(
+            connection,
+            credentials,
+            recipients=recipients,
+            passphrase=passphrase,
+            options=options,
+        )
         with stream:
             try:
                 for chunk in stream:
@@ -520,7 +553,7 @@ class _Header:
     encrypted: bool
     family: ServerFamily | None
     sandboxed: bool
-    #: Encrypted, and no identity was supplied, so the plaintext is unknown.
+    #: Encrypted, and no decryption secret was supplied, so the plaintext is unknown.
     needs_identity: bool = False
 
 
@@ -594,7 +627,13 @@ def _prefixed(head: bytes, rest: IO[bytes]) -> IO[bytes]:
 class _Decrypting:
     """Decrypts ``source`` into a pipe on a thread; ``reader`` is the plaintext end."""
 
-    def __init__(self, source: IO[bytes], identities: Sequence[str]) -> None:
+    def __init__(
+        self,
+        source: IO[bytes],
+        *,
+        identities: Sequence[str] | None = None,
+        passphrase: str | None = None,
+    ) -> None:
         from . import encryption
 
         read_fd, write_fd = os.pipe()
@@ -604,7 +643,10 @@ class _Decrypting:
 
         def run() -> None:
             try:
-                encryption.decrypt(source, writer, identities)
+                if passphrase is not None:
+                    encryption.decrypt(source, writer, passphrase=passphrase)
+                else:
+                    encryption.decrypt(source, writer, identities or ())
             except BrokenPipeError:
                 pass  # the consumer stopped reading
             except BaseException as exc:  # noqa: BLE001 - re-raised on the consumer's thread
@@ -728,11 +770,18 @@ def _read_head(reader: IO[bytes]) -> bytes:
 
 
 def _prepare(
-    reader: IO[bytes], identities: Sequence[str] | None, cleanup: ExitStack
+    reader: IO[bytes],
+    identities: Sequence[str] | None,
+    cleanup: ExitStack,
+    *,
+    passphrase: str | None = None,
 ) -> tuple[_Header, bytes, IO[bytes], _Decrypting | None]:
     """Peek the source: (header, plaintext head, plaintext reader, decryptor)."""
     from . import encryption
 
+    if identities is not None and passphrase is not None:
+        msg = "supply identities= or passphrase=, not both"
+        raise InvalidArgumentsError(msg)
     try:
         head = _read_head(reader)
     except OSError as exc:
@@ -740,9 +789,9 @@ def _prepare(
         raise InvalidArgumentsError(msg) from exc
     if not head.startswith(encryption.AGE_HEADER):
         return _header(head, encrypted=False), head, reader, None
-    if not identities:
+    if identities is None and passphrase is None:
         return _Header(True, None, False, needs_identity=True), b"", reader, None
-    decrypting = _Decrypting(_prefixed(head, reader), identities)
+    decrypting = _Decrypting(_prefixed(head, reader), identities=identities, passphrase=passphrase)
     cleanup.callback(decrypting.close)
     plain_head = decrypting.reader.read(CHUNK)
     if not plain_head:
@@ -752,7 +801,7 @@ def _prepare(
             msg = f"cannot read the dump source: {error.strerror or error}"
             raise InvalidArgumentsError(msg) from error
         if error is not None:
-            raise error  # wrong identity or damage, before anything is loaded
+            raise error  # wrong identity/passphrase or damage, before anything is loaded
     return _header(plain_head, encrypted=True), plain_head, decrypting.reader, decrypting
 
 
@@ -768,7 +817,10 @@ def _load_plan(
     findings = _platform_and_option_findings(options, _client.LOAD_OPTIONS)
     if header is not None and header.needs_identity:
         findings.append(
-            Finding(Code.IDENTITY_REQUIRED, "the source is age-encrypted; supply identities=")
+            Finding(
+                Code.IDENTITY_REQUIRED,
+                "the source is age-encrypted; supply identities= or passphrase=",
+            )
         )
     resolved = _resolve_or_finding(credentials)
     if isinstance(resolved, Finding):
@@ -838,6 +890,7 @@ def check_load(
     source: str | os.PathLike[str] | None = None,
     replace: str | None = None,
     identities: Sequence[str] | None = None,
+    passphrase: str | None = None,
     options: Sequence[str] = (),
     allow_unsandboxed: bool = False,
 ) -> Verdict:
@@ -849,7 +902,9 @@ def check_load(
             raise InvalidArgumentsError(msg)
         header = None
         if source is not None:
-            header, *_ = _prepare(_open_source(source, cleanup), identities, cleanup)
+            header, *_ = _prepare(
+                _open_source(source, cleanup), identities, cleanup, passphrase=passphrase
+            )
         verdict = _load_plan(
             connection,
             credentials,
@@ -869,6 +924,7 @@ def load(
     *,
     replace: str | None = None,
     identities: Sequence[str] | None = None,
+    passphrase: str | None = None,
     options: Sequence[str] = (),
     allow_unsandboxed: bool = False,
 ) -> TransferResult:
@@ -880,7 +936,7 @@ def load(
     started = time.monotonic()
     with operation("load", connection) as fields, ExitStack() as cleanup:
         header, head, reader, decrypting = _prepare(
-            _open_source(source, cleanup), identities, cleanup
+            _open_source(source, cleanup), identities, cleanup, passphrase=passphrase
         )
         plan = _load_plan(
             connection,

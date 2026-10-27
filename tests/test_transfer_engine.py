@@ -82,7 +82,12 @@ def fake(
     return tool
 
 
-def stream(tool: _client.ClientTool, recipients: list[str] | None = None) -> transfer.DumpStream:
+def stream(
+    tool: _client.ClientTool,
+    recipients: list[str] | None = None,
+    *,
+    passphrase: str | None = None,
+) -> transfer.DumpStream:
     process = transfer._start(tool, ["wp_site"], CREDS, CONN, for_load=False)
     return transfer.DumpStream(
         process,
@@ -91,6 +96,7 @@ def stream(tool: _client.ClientTool, recipients: list[str] | None = None) -> tra
         verdict=Verdict("dump"),
         recipients=recipients,
         password=SECRET,
+        passphrase=passphrase,
     )
 
 
@@ -257,6 +263,32 @@ def test_encrypted_dump_round_trips(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     out = io.BytesIO()
     encryption.decrypt(io.BytesIO(data), out, [identity])
     assert out.getvalue() == b"SELECT 42;\n"
+
+
+def test_passphrase_encrypted_dump_round_trips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("pyrage")
+    from l3io.wp.database import encryption
+
+    tool = fake(tmp_path, monkeypatch, "mysqldump", 'echo "SELECT 42;"\n')
+    data = b"".join(stream(tool, passphrase="dump-pass"))
+    assert data.startswith(encryption.AGE_HEADER)
+    out = io.BytesIO()
+    encryption.decrypt(io.BytesIO(data), out, passphrase="dump-pass")
+    assert out.getvalue() == b"SELECT 42;\n"
+
+
+def test_dump_refuses_recipients_and_passphrase_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("pyrage")
+    from l3io.wp.database import encryption
+
+    fake(tmp_path, monkeypatch, "mysqldump", 'echo "SELECT 1;"\n')
+    _, recipient = encryption.generate_identity()
+    with pytest.raises(InvalidArgumentsError, match="not both"):
+        transfer.iter_dump(CONN, Explicit("wpuser", SECRET), recipients=[recipient], passphrase="x")
 
 
 def test_an_unusable_recipient_fails_instead_of_hanging(
@@ -888,6 +920,38 @@ def test_a_wrong_identity_loads_nothing(monkeypatch: pytest.MonkeyPatch) -> None
     other, _ = encryption.generate_identity()
     with pytest.raises(DecryptionError):
         transfer.load(CONN, Explicit("wpuser", SECRET), io.BytesIO(sealed), identities=[other])
+
+
+def test_passphrase_load_round_trips(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("pyrage")
+    from l3io.wp.database import encryption
+
+    plain = b"-- MySQL dump 10.13\n-- Server version\t8.4.6\nSELECT 7;\n"
+    sealed = io.BytesIO()
+    encryption.encrypt(io.BytesIO(plain), sealed, passphrase="load-pass")
+    received = tmp_path / "received"
+    _load_planned(tmp_path, monkeypatch, f"cat > {received}\n")
+    result = transfer.load(
+        CONN, Explicit("wpuser", SECRET), io.BytesIO(sealed.getvalue()), passphrase="load-pass"
+    )
+    assert received.read_bytes() == plain
+    assert result.bytes == len(plain)
+
+
+def test_encrypted_source_without_secret_names_passphrase() -> None:
+    pytest.importorskip("pyrage")
+    from l3io.wp.database import encryption
+
+    sealed = io.BytesIO()
+    encryption.encrypt(io.BytesIO(b"SELECT 1;\n"), sealed, passphrase="x")
+    with ExitStack() as cleanup:
+        header, *_ = transfer._prepare(io.BytesIO(sealed.getvalue()), None, cleanup)
+    assert header.needs_identity
+    plan = transfer._load_plan(
+        CONN, Explicit("wpuser", SECRET), (), replace=None, header=header, allow_unsandboxed=False
+    )
+    [finding] = [f for f in plan.verdict.findings if f.code is Code.IDENTITY_REQUIRED]
+    assert "passphrase=" in finding.message
 
 
 SANDBOXED = (

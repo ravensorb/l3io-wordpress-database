@@ -80,7 +80,7 @@ name is exported from `l3io.wp.database`.
 | `inspection` | `survey`, `Survey`, `inspect`, `ConnectionState`, `schema_version`, `SchemaVersion` |
 | `provision` | `ensure`, `EnsureResult`, `rotate_password`, `revoke`, `drop_user`, `drop_database`, `OperationResult`, and `check_` for each |
 | `transfer` | `dump`, `iter_dump`, `DumpStream`, `load`, `TransferResult`, `check_dump`, `check_load` |
-| `encryption` | used through `dump(recipients=)` and `load(identities=)`; `generate_identity` |
+| `encryption` | used through `dump`/`load` with `recipients=`/`identities=` or `passphrase=`; root re-exports `encrypt`, `decrypt`, `check_recipients`, `check_passphrase`, `generate_identity` |
 | `identifiers` | `quote_identifier`, `quote_grant_database`, `validate_database_name`, `validate_user_name` |
 | `errors` | `DatabaseError` and its subclasses (section 10) |
 | (root) | `Database`, a facade binding one `Connection`; `ClientTool` (a transfer's client tool, defined in the internal `_client` module); `__version__` |
@@ -364,15 +364,28 @@ tool; for a dump, the bytes produced, counted after encryption when there is any
    fails for any reason, the client tool is killed rather than its input closed,
    so a partial statement never runs.
 
-**Encryption** is optional (extra `encryption`, `pyrage`). `recipients` takes age or
-SSH public keys; the dump stream is encrypted in the standard `age` format on its
-way to the caller. `identities` takes age identities. An identity may itself be
-passphrase-protected, using age's passphrase mode on the small identity file.
-`generate_identity()` returns a new identity and its public key. Because the format
-is standard `age`, any output can be decrypted by the stock `age` command line. This
-is the family's single encryption format; backup uses the same one for its archives.
-An identity that matches no recipient raises `DecryptionError` before anything is
-loaded. A truncated or damaged `age` stream raises `CorruptDumpError`.
+**Encryption** is optional (extra `encryption`, `pyrage`). Two mutually exclusive
+modes on `encrypt` / `decrypt` / `dump` / `load` (and the matching checks):
+
+- **Recipients / identities** — `recipients=` takes age or SSH public keys; the
+  dump stream is encrypted in the standard `age` format. `identities=` takes age
+  identities. An identity may itself be passphrase-protected, using age's
+  passphrase mode on the small identity file.
+- **Passphrase** — `passphrase=` (keyword-only) encrypts with a sole scrypt
+  recipient via `pyrage.passphrase.encrypt_io` / `decrypt_io`. Stock `age -d`
+  recovers the plaintext. Empty passphrase, or both modes set, raises
+  `InvalidArgumentsError`. The passphrase never appears in exception messages.
+
+`generate_identity()` returns a new identity and its public key.
+`check_recipients` / `check_passphrase` validate before any data moves. The
+package root re-exports `encrypt`, `decrypt`, `check_recipients`,
+`check_passphrase`, and `generate_identity` so backup can encrypt archive
+streams without private imports. Because the format is standard `age`, any
+output can be decrypted by the stock `age` command line. This is the family's
+single encryption format. A wrong identity or passphrase raises
+`DecryptionError` before anything is loaded. A truncated or damaged `age`
+stream raises `CorruptDumpError`. An encrypted source with neither secret
+yields `Finding(Code.IDENTITY_REQUIRED, "... supply identities= or passphrase=")`.
 
 ## 8. Observability
 
@@ -397,12 +410,15 @@ The `l3io-wordpress-database` command has one subcommand per operation (`survey`
 `inspect`, `ensure`, `rotate-password`, `revoke`, `drop-user`, `drop-database`,
 `dump`, `load`, `schema-version`) and `check <operation>`.
 
-- **No password is accepted as an argument value.** Credentials come from
-  `--wp-config PATH`, from a user name with the name of the environment variable
-  holding its password (`--admin-user` with `--admin-password-env`, and `--db-user`
-  with `--db-password-env` for the WordPress account), from
+- **No password or age passphrase is accepted as an argument value.** Credentials
+  come from `--wp-config PATH`, from a user name with the name of the environment
+  variable holding its password (`--admin-user` with `--admin-password-env`, and
+  `--db-user` with `--db-password-env` for the WordPress account), from
   `--admin-aws-secret-id`/`--admin-aws-region`, or, when no password variable is
-  given, from an interactive prompt on a terminal. An argument vector is visible to every user on the machine.
+  given, from an interactive prompt on a terminal. An age content passphrase comes
+  from `--passphrase-file PATH` or `--ask-passphrase` (TTY), mutually exclusive
+  with `--recipient` / `--identity`. An argument vector is visible to every user
+  on the machine.
 - Destructive subcommands require `--confirm NAME`; `load` into a non-empty database
   requires `--replace NAME`.
 - Extra client options are passed as `--option=--name[=value]`, joined with `=` so
@@ -431,7 +447,7 @@ each is wrapped with `raise ... from` (AD-14).
 | `ProvisioningError` | a provisioning operation started and failed; carries the statements completed |
 | `DatabaseUnreachableError`, `AuthenticationFailedError`, `AccessDeniedError` | raised by the read operations `survey` and `schema_version`, which have no check form, and by a server error mid-operation |
 | `TransferError(verdict, exit_code, stderr)` | a dump or load started and failed; stderr is redacted |
-| `DecryptionError` | none of the supplied identities can decrypt the source (a wrong identity), or an identity file's passphrase is wrong |
+| `DecryptionError` | none of the supplied identities can decrypt the source, the content passphrase is wrong, or an identity file's passphrase is wrong |
 | `CorruptDumpError` | an encrypted source is truncated or damaged; kept distinct from `DecryptionError`, because the remedy differs |
 
 ## 11. Compatibility
@@ -446,16 +462,20 @@ each is wrapped with `raise ... from` (AD-14).
 
 ## 12. Packaging and release
 
-- **Version:** this design ships as **0.1.0**: documented and typed, with no stability
-  promise. **1.0.0** is declared after `l3io-wordpress-backup` has integrated against
-  it. From 1.0.0, semantic versioning applies with deprecation before removal.
+- **Version:** **0.1.0** is the first documented release. **0.2.0** adds streaming
+  passphrase encryption (this amendment). **1.0.0** is declared after
+  `l3io-wordpress-backup` has integrated against it. From 1.0.0, semantic
+  versioning applies with deprecation before removal.
 - **Dependencies:** every requirement, runtime and extra, carries an upper bound
   (AD-15), enforced by a test:
   - core: `PyMySQL[rsa]>=1.2,<2`, `structlog>=26.1,<27`, `opentelemetry-api>=1.30,<2`;
   - `aws`: `boto3>=1.34,<2`;
   - `wpconfig`: `l3io-wordpress-config>=0.1.0,<0.2`; 0.1.0 is the first config release
     carrying the define-parser fix, and config is pre-1.0, so a minor bump may break;
-  - `encryption`: `pyrage>=1.4,<2`.
+  - `encryption`: `pyrage>=1.4,<2` (streaming `passphrase.encrypt_io` /
+    `decrypt_io` required for passphrase mode; until that ships on PyPI,
+    development may git-pin a fork under `[tool.uv.sources]` and must strip it
+    before publish).
 
   The `rsa` extra of PyMySQL is required for `caching_sha2_password` over a non-TLS
   connection, which is exactly the first-provisioning path.
@@ -487,7 +507,9 @@ each is wrapped with `raise ... from` (AD-14).
 - credential chain absent/failed semantics;
 - confirmation guards;
 - atomic path writes;
-- `age` round trip, truncation, and wrong identity versus corruption.
+- `age` round trip (recipients and passphrase), truncation, wrong identity or
+  passphrase versus corruption; chunked-reader streaming for passphrase mode;
+  stock `age -d` when `age` is on PATH.
 
 **Integration tests, against every engine in the matrix:**
 - `ensure` convergence, with a second run reporting no change and executing no write;

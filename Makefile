@@ -59,15 +59,29 @@ test-db: ## Integration tests against a server; set DB_HOST first
 	$(UV) run pytest -q tests/test_integration.py
 
 TRANSFER_PORT ?= 33399
+# Prebuilt abi3 wheel for l3io-age-passphrase (server images have no C compiler).
+BINDER_WHEEL_DIR ?= $(CURDIR)/.cache/age-passphrase-wheels
+BINDER_VERSION ?= 0.1.0
+BINDER_WHEEL_URL ?= https://github.com/ravensorb/l3io-age-passphrase/releases/download/v$(BINDER_VERSION)/l3io_age_passphrase-$(BINDER_VERSION)-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
 
 test-transfer: ## Export/import tests against ENGINE (a server image) using its own client tools
 	@test -n "$(ENGINE)" || { echo "set ENGINE, e.g. make test-transfer ENGINE=mysql:8.4"; exit 1; }
-	@set -eu; name="l3io-transfer-$$$$"; \
+	@set -eu; \
+	mkdir -p "$(BINDER_WHEEL_DIR)"; \
+	wheel=$$(ls "$(BINDER_WHEEL_DIR)"/l3io_age_passphrase-*.whl 2>/dev/null | head -1 || true); \
+	if [ -z "$$wheel" ]; then \
+	  echo "fetching l3io-age-passphrase wheel for transfer container"; \
+	  curl -fsSL -o "$(BINDER_WHEEL_DIR)/$$(basename "$(BINDER_WHEEL_URL)")" "$(BINDER_WHEEL_URL)"; \
+	  wheel=$$(ls "$(BINDER_WHEEL_DIR)"/l3io_age_passphrase-*.whl | head -1); \
+	fi; \
+	base=$$(basename "$$wheel"); \
+	name="l3io-transfer-$$$$"; \
 	docker run -d --rm --name "$$name" -e MYSQL_ROOT_PASSWORD=root -e MARIADB_ROOT_PASSWORD=root \
 	  -p 127.0.0.1:$(TRANSFER_PORT):3306 "$(ENGINE)" >/dev/null; \
 	trap 'docker rm -f "'"$$name"'" "'"$$name"'-tests" >/dev/null 2>&1' EXIT; \
 	trap 'exit 130' INT TERM; \
 	docker run --rm --name "$$name-tests" --network host -v "$(CURDIR)":/repo:ro \
+	  -v "$$wheel:/wheels/$$base:ro" -e L3IO_AGE_PASSPHRASE_WHEEL=/wheels/$$base \
 	  -e L3IO_ENGINE="$(ENGINE)" -e L3IO_TRANSFER_CONTAINER=1 \
 	  -e DB_HOST=127.0.0.1 -e DB_PORT=$(TRANSFER_PORT) -e DB_ADMIN_USER=root -e DB_ADMIN_PASSWORD=root \
 	  --entrypoint bash "$(ENGINE)" /repo/tools/transfer-tests.sh & \
@@ -97,7 +111,7 @@ verify-wheel: build ## Install the BUILT wheel into an isolated env and import i
 	    python -c "from l3io.wp import database; print('import ok', database.__version__)"; \
 	$(UV) run --isolated --no-project --with "$$wheel" python -c "\
 import importlib.util, sys; \
-[sys.exit('base install pulled ' + m) for m in ('boto3','botocore','l3io.wp.config','pyrage') if importlib.util.find_spec(m) is not None]; \
+[sys.exit('base install pulled ' + m) for m in ('boto3','botocore','l3io.wp.config','pyrage','l3io_age_passphrase') if importlib.util.find_spec(m) is not None]; \
 print('base install is clean')"; \
 	$(UV) run --isolated --no-project --with "$$wheel" l3io-wordpress-database --version; \
 	bash tools/verify_extras.sh "$$wheel"

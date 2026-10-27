@@ -252,7 +252,15 @@ def test_check_transfer_needs_no_admin_account(
     assert seen["source"] is None
 
 
-@pytest.mark.parametrize("extra", [["--output", "-"], ["--recipient", "garbage"]])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--output", "-"],
+        ["--recipient", "garbage"],
+        ["--passphrase-file", "x"],
+        ["--ask-passphrase"],
+    ],
+)
 def test_check_dump_rejects_options_it_would_ignore(
     monkeypatch: pytest.MonkeyPatch, extra: list[str]
 ) -> None:
@@ -260,3 +268,100 @@ def test_check_dump_rejects_options_it_would_ignore(
     with pytest.raises(SystemExit) as info:
         cli.main(["check", "dump", *SITE, *WP, *extra])
     assert info.value.code == cli.Exit.USAGE
+
+
+def test_dump_passes_passphrase_from_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_dump(connection, credentials, to, **kw):  # type: ignore[no-untyped-def]
+        seen.update(kw)
+        from l3io.wp.database.server import parse_version
+        from l3io.wp.database.transfer import TransferResult
+
+        return TransferResult(1, 1.0, "mysqldump", parse_version("8.4.11"), Verdict("dump"))
+
+    monkeypatch.setattr(cli, "dump", fake_dump)
+    secret = tmp_path / "pass.txt"
+    secret.write_text("stream-secret\n")
+    assert (
+        cli.main(
+            [
+                "dump",
+                *SITE,
+                *WP,
+                "--output",
+                str(tmp_path / "out.age"),
+                "--passphrase-file",
+                str(secret),
+            ]
+        )
+        == cli.Exit.OK
+    )
+    assert seen["passphrase"] == "stream-secret"
+    assert seen["recipients"] is None
+
+
+def test_dump_refuses_recipient_and_passphrase_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    monkeypatch.setattr(cli, "dump", lambda *a, **k: pytest.fail("dumped"))
+    secret = tmp_path / "pass.txt"
+    secret.write_text("x\n")
+    assert (
+        cli.main(
+            [
+                "dump",
+                *SITE,
+                *WP,
+                "--output",
+                str(tmp_path / "out.age"),
+                "--recipient",
+                "age1example",
+                "--passphrase-file",
+                str(secret),
+            ]
+        )
+        == cli.Exit.USAGE
+    )
+
+
+def test_load_passes_passphrase_from_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_load(connection, credentials, source, **kw):  # type: ignore[no-untyped-def]
+        seen.update(kw)
+        from l3io.wp.database.server import parse_version
+        from l3io.wp.database.transfer import TransferResult
+
+        return TransferResult(0, 1.0, "mysql", parse_version("8.4.11"), Verdict("load"))
+
+    monkeypatch.setattr(cli, "load", fake_load)
+    dump_file = tmp_path / "x.sql.age"
+    dump_file.write_bytes(b"age-encryption.org/v1\n")
+    secret = tmp_path / "pass.txt"
+    secret.write_text("load-secret\n")
+    assert (
+        cli.main(
+            [
+                "load",
+                *SITE,
+                *WP,
+                "--input",
+                str(dump_file),
+                "--passphrase-file",
+                str(secret),
+            ]
+        )
+        == cli.Exit.OK
+    )
+    assert seen["passphrase"] == "load-secret"
+    assert seen["identities"] is None
+
+
+def test_no_option_takes_a_passphrase_value() -> None:
+    offenders = [
+        a.option_strings
+        for a in _actions(cli.build_parser())
+        if any(s == "--passphrase" for s in a.option_strings)
+    ]
+    assert offenders == []

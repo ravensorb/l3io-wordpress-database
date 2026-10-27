@@ -1,0 +1,13 @@
+next:
+  '001': 2
+backlog:
+- key: BL-E001-001
+  epic: '001'
+  sprint: '01'
+  title: Record pyrage PyPI floor X after woodruffw/pyrage#171 release
+  source: execute (E001-S01-002)
+  source_phase: execute
+  source_ref: E001-S01-002
+  severity: Medium
+  status: backlog
+  description: 'Deferred from Story 1.2 workaround. When upstream publishes passphrase.encrypt_io/decrypt_io: verify import from PyPI wheel, set encryption extra to pyrage>=X,<2, delete [tool.uv.sources] pyrage pin, update handoff. Precondition for 0.2.0 publish (also E002-S01-004).'

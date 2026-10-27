@@ -1,0 +1,74 @@
+version: 2
+granularity: story
+scope:
+  simple: {}
+  standard:
+    man_hours:
+      samples:
+      - 0.25
+      - 0.6667
+      - 0.5
+      - 0.5833
+    hitl_hours:
+      samples:
+      - 0.2841
+      - 0.142
+      - 0.142
+      - 0.2841
+    elapsed_hours:
+      samples:
+      - 0.25
+      - 0.2
+      - 0.25
+  complex:
+    elapsed_hours:
+      samples:
+      - 0.25
+      - 0.1875
+    man_hours:
+      samples:
+      - 0.5
+      - 0.4167
+    hitl_hours:
+      samples:
+      - 0.0
+      - 0.1543
+closure:
+  sprint:
+    elapsed_hours:
+      samples:
+      - 0.3802
+      - 0.1602
+    man_hours:
+      samples:
+      - 0.1271
+      - 0.0762
+    hitl_hours:
+      samples:
+      - 0.4545
+      - 0.2703
+  epic:
+    elapsed_hours:
+      samples:
+      - 0.0778
+    man_hours:
+      samples:
+      - 0.0649
+    hitl_hours:
+      samples:
+      - 0.2299
+fix:
+  simple: {}
+  standard:
+    clean:
+      mean_man_hours: 3.0
+      samples: 4
+  complex:
+    clean:
+      mean_man_hours: 5.5
+      samples: 2
+orchestration:
+  sprint: {}
+  epic: {}
+metrics_migrated_at: '2026-10-21T01:54:42Z'
+token_basis_migrated_at: '2026-10-21T01:54:42Z'

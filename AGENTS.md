@@ -70,3 +70,9 @@ Python 3.11+, uv, ruff, mypy --strict, PyMySQL. The spec and plans live in
   over the Unix socket the image's temporary setup server answers first.
 
 <!-- /bmad:context -->
+
+## Interim (plan-4)
+
+- `pyrage` is also git-pinned under `[tool.uv.sources]` (fork tip with
+  `passphrase.encrypt_io` / `decrypt_io`) until upstream PyPI ships those APIs.
+  Same strip-before-publish rule as config; see handoff 0.2.0 feature section.

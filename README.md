@@ -89,11 +89,20 @@ for an ordinary failure:
 ## Export and import
 
 ```python
-from l3io.wp.database import Connection, Database, Environment, WpConfigFile, generate_identity
+from l3io.wp.database import (
+    Connection,
+    Database,
+    Environment,
+    WpConfigFile,
+    encrypt,
+    generate_identity,
+)
 
 site = WpConfigFile("/var/www/html/wp-config.php")
 identity, recipient = generate_identity()
 Database(site.connection()).dump(site, "/backups/wp_site.sql.age", recipients=[recipient])
+# Or passphrase mode (mutually exclusive with recipients= / identities=):
+# Database(site.connection()).dump(site, "/backups/wp_site.sql.age", passphrase=secret)
 
 admin = Environment("DB_ADMIN_USER", "DB_ADMIN_PASSWORD")
 staging = Database(Connection("127.0.0.1", "wp_site_staging"))
@@ -112,8 +121,13 @@ Loading into a database that holds tables requires `replace=` naming it. A damag
 source is discovered mid-load, after the statements before the damage have run,
 so load into a staging database and switch to it once the load succeeds.
 
-Encryption is standard [age](https://age-encryption.org): any dump can be
-decrypted with the stock `age` command line.
+Encryption is standard [age](https://age-encryption.org): recipient keys or a
+passphrase (scrypt sole recipient). Either streams; any dump can be decrypted
+with the stock `age` command line. Passphrase mode uses the
+`l3io-age-passphrase` binder by default, or `age` + `age-plugin-batchpass` when
+`L3IO_AGE_PASSPHRASE_BACKEND=cli` (or when the binder is absent under `auto`).
+Archive callers can also
+`from l3io.wp.database import encrypt, decrypt, check_passphrase`.
 
 ## Command line
 
@@ -126,17 +140,24 @@ l3io-wordpress-database ensure --wp-config /var/www/html/wp-config.php \
     --admin-user root --admin-password-env DB_ADMIN_PASSWORD
 l3io-wordpress-database dump --wp-config /var/www/html/wp-config.php \
     --output wp_site.sql.age --recipient age1examplerecipient
+l3io-wordpress-database dump --wp-config /var/www/html/wp-config.php \
+    --output wp_site.sql.age --passphrase-file /run/secrets/age-passphrase
 l3io-wordpress-database load --db-host 127.0.0.1 --db-name wp_site_staging \
     --db-user wpuser --db-password-env DB_PASSWORD \
     --input wp_site.sql.age --identity key.txt
+l3io-wordpress-database load --db-host 127.0.0.1 --db-name wp_site_staging \
+    --db-user wpuser --db-password-env DB_PASSWORD \
+    --input wp_site.sql.age --ask-passphrase
 l3io-wordpress-database drop-database --db-host 127.0.0.1 --db-name wp_site_staging \
     --admin-user root --admin-password-env DB_ADMIN_PASSWORD --confirm wp_site_staging
 ```
 
-No password is accepted as an argument value, because an argument vector is
-visible to every user on the machine: a password comes from `--wp-config`, from
-the environment variable named by a `--*-password-env` option, from AWS Secrets
-Manager, or from a prompt. Results are printed as JSON on stdout; with
+No password or age passphrase is accepted as an argument value, because an
+argument vector is visible to every user on the machine: a password comes from
+`--wp-config`, from the environment variable named by a `--*-password-env`
+option, from AWS Secrets Manager, or from a prompt; an age passphrase comes from
+`--passphrase-file` or `--ask-passphrase` (mutually exclusive with
+`--recipient` / `--identity`). Results are printed as JSON on stdout; with
 `dump --output -` the dump is on stdout and the result on stderr.
 
 | Exit code | Meaning |

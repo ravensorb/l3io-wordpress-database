@@ -1,11 +1,16 @@
-"""age encryption through pyrage (extra: encryption)."""
+"""age encryption (extra: encryption) — pyrage recipients, passphrase backends."""
 
 from __future__ import annotations
 
 import errno
 import io
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from typing import IO, cast
 
 import pytest
 
@@ -20,11 +25,41 @@ from l3io.wp.database.errors import (
 )
 
 PLAIN = b"INSERT INTO t VALUES (1);\n" * 5000
+PASSPHRASE = "test-passphrase-not-a-secret"
+
+
+class _ChunkedReader(io.RawIOBase):
+    """Yields plaintext in fixed-size chunks (not one bytes buffer)."""
+
+    def __init__(self, data: bytes, chunk_size: int = 17) -> None:
+        super().__init__()
+        self._data = data
+        self._chunk_size = chunk_size
+        self._offset = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:
+        if self._offset >= len(self._data):
+            return b""
+        if size is None or size < 0:
+            size = self._chunk_size
+        size = min(size, self._chunk_size, len(self._data) - self._offset)
+        start = self._offset
+        self._offset += size
+        return self._data[start : self._offset]
 
 
 def _encrypt(recipient: str) -> bytes:
     out = io.BytesIO()
     encryption.encrypt(io.BytesIO(PLAIN), out, [recipient])
+    return out.getvalue()
+
+
+def _encrypt_passphrase(passphrase: str = PASSPHRASE) -> bytes:
+    out = io.BytesIO()
+    encryption.encrypt(io.BytesIO(PLAIN), out, passphrase=passphrase)
     return out.getvalue()
 
 
@@ -155,3 +190,101 @@ def test_missing_extra_is_named(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(MissingDependencyError) as info:
         encryption.generate_identity()
     assert info.value.extra == "encryption"
+
+
+def test_passphrase_round_trip() -> None:
+    data = _encrypt_passphrase()
+    assert data.startswith(encryption.AGE_HEADER)
+    out = io.BytesIO()
+    encryption.decrypt(io.BytesIO(data), out, passphrase=PASSPHRASE)
+    assert out.getvalue() == PLAIN
+
+
+def test_passphrase_chunked_reader_round_trip() -> None:
+    encrypted = io.BytesIO()
+    encryption.encrypt(cast(IO[bytes], _ChunkedReader(PLAIN)), encrypted, passphrase=PASSPHRASE)
+    encrypted.seek(0)
+    out = io.BytesIO()
+    encryption.decrypt(encrypted, out, passphrase=PASSPHRASE)
+    assert out.getvalue() == PLAIN
+
+
+def test_wrong_passphrase_is_a_decryption_error() -> None:
+    with pytest.raises(DecryptionError) as info:
+        encryption.decrypt(io.BytesIO(_encrypt_passphrase()), io.BytesIO(), passphrase="wrong")
+    assert PASSPHRASE not in str(info.value)
+    assert "wrong" not in str(info.value)
+
+
+@pytest.mark.parametrize("damage", ["truncate", "flip_body", "not_age"])
+def test_passphrase_damage_is_a_corrupt_dump_error(damage: str) -> None:
+    data = bytearray(_encrypt_passphrase())
+    if damage == "truncate":
+        data = data[: max(8, len(data) // 2)]
+    elif damage == "flip_body":
+        data[len(data) // 2] ^= 0xFF
+    else:
+        data = bytearray(b"hello, not age at all")
+    with pytest.raises(CorruptDumpError):
+        encryption.decrypt(io.BytesIO(bytes(data)), io.BytesIO(), passphrase=PASSPHRASE)
+
+
+def test_passphrase_mutex() -> None:
+    _, recipient = encryption.generate_identity()
+    with pytest.raises(InvalidArgumentsError):
+        encryption.encrypt(io.BytesIO(b"x"), io.BytesIO(), [recipient], passphrase=PASSPHRASE)
+    with pytest.raises(InvalidArgumentsError):
+        encryption.encrypt(io.BytesIO(b"x"), io.BytesIO())
+    with pytest.raises(InvalidArgumentsError):
+        encryption.encrypt(io.BytesIO(b"x"), io.BytesIO(), passphrase="")
+    identity, _ = encryption.generate_identity()
+    with pytest.raises(InvalidArgumentsError):
+        encryption.decrypt(io.BytesIO(b"x"), io.BytesIO(), [identity], passphrase=PASSPHRASE)
+
+
+def test_check_passphrase_refuses_empty() -> None:
+    with pytest.raises(InvalidArgumentsError):
+        encryption.check_passphrase("")
+    encryption.check_passphrase(PASSPHRASE)
+
+
+def test_root_reexports_encryption_api() -> None:
+    from l3io.wp import database as pkg
+
+    assert pkg.encrypt is encryption.encrypt
+    assert pkg.decrypt is encryption.decrypt
+    assert pkg.check_passphrase is encryption.check_passphrase
+    assert pkg.check_recipients is encryption.check_recipients
+
+
+@pytest.mark.skipif(shutil.which("age") is None, reason="age CLI not installed")
+def test_passphrase_decrypts_with_stock_age() -> None:
+    age_bin = shutil.which("age")
+    if age_bin is None:  # pragma: no cover - skipif already gated
+        pytest.skip("age CLI not installed")
+    data = _encrypt_passphrase()
+    with tempfile.TemporaryDirectory() as tempdir:
+        encrypted_path = Path(tempdir) / "payload.age"
+        decrypted_path = Path(tempdir) / "payload.out"
+        encrypted_path.write_bytes(data)
+        import pty
+
+        master, slave = pty.openpty()
+        try:
+            proc = subprocess.Popen(  # noqa: S603 - absolute age from PATH, fixed args
+                [age_bin, "--decrypt", "-o", str(decrypted_path), str(encrypted_path)],
+                stdin=slave,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                close_fds=True,
+            )
+            os.close(slave)
+            slave = -1
+            os.write(master, (PASSPHRASE + "\n").encode())
+            stdout, stderr = proc.communicate(timeout=60)
+        finally:
+            os.close(master)
+            if slave >= 0:
+                os.close(slave)
+        assert proc.returncode == 0, (stdout, stderr)
+        assert decrypted_path.read_bytes() == PLAIN

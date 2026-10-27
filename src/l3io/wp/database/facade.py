@@ -133,10 +133,15 @@ class Database:
         credentials: CredentialSource,
         *,
         recipients: Sequence[str] | None = None,
+        passphrase: str | None = None,
         options: Sequence[str] = (),
     ) -> DumpStream:
         return transfer.iter_dump(
-            self._connection, credentials, recipients=recipients, options=options
+            self._connection,
+            credentials,
+            recipients=recipients,
+            passphrase=passphrase,
+            options=options,
         )
 
     def dump(
@@ -145,10 +150,16 @@ class Database:
         to: IO[bytes] | str | os.PathLike[str],
         *,
         recipients: Sequence[str] | None = None,
+        passphrase: str | None = None,
         options: Sequence[str] = (),
     ) -> TransferResult:
         return transfer.dump(
-            self._connection, credentials, to, recipients=recipients, options=options
+            self._connection,
+            credentials,
+            to,
+            recipients=recipients,
+            passphrase=passphrase,
+            options=options,
         )
 
     def check_load(
@@ -158,6 +169,7 @@ class Database:
         source: str | os.PathLike[str] | None = None,
         replace: str | None = None,
         identities: Sequence[str] | None = None,
+        passphrase: str | None = None,
         options: Sequence[str] = (),
         allow_unsandboxed: bool = False,
     ) -> Verdict:
@@ -167,6 +179,7 @@ class Database:
             source=source,
             replace=replace,
             identities=identities,
+            passphrase=passphrase,
             options=options,
             allow_unsandboxed=allow_unsandboxed,
         )
@@ -178,6 +191,7 @@ class Database:
         *,
         replace: str | None = None,
         identities: Sequence[str] | None = None,
+        passphrase: str | None = None,
         options: Sequence[str] = (),
         allow_unsandboxed: bool = False,
     ) -> TransferResult:
@@ -187,6 +201,7 @@ class Database:
             source,
             replace=replace,
             identities=identities,
+            passphrase=passphrase,
             options=options,
             allow_unsandboxed=allow_unsandboxed,
         )

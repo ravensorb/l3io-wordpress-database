@@ -1,0 +1,45 @@
+key: 'E001-S01-001'
+epic: 'E001'
+sprint: 'S01'
+title: Add passphrase.encrypt_io / decrypt_io to pyrage
+classification: complex
+status: done
+updated_at: '2026-10-21T01:54:43Z'
+estimate:
+  man_hours: 15.0
+  hitl_hours: 0.81
+  elapsed_hours: 5.0
+  tokens_k:
+    total: 350
+    input: 52
+    output: 18
+    cache_write: 105
+    cache_read: 175
+  cost: 1.45
+  model: claude-opus-5
+  fix_factor: 1.25
+  scope_ratios:
+    man_hours: 1.0
+    hitl_hours: 1.0
+    elapsed_hours: 1.0
+    tokens_k: 1.0
+  confidence: medium
+completion_evidence:
+  fix_iterations: 0
+  files_changed: 5
+  notes: PR https://github.com/woodruffw/pyrage/pull/171 — passphrase.encrypt_io/decrypt_io; local make test/typecheck/clippy green; CI pending first-time contributor workflows
+  test_runs:
+  - command: make test
+    exit_code: 0
+  - command: make typecheck
+    exit_code: 0
+  - command: cargo clippy -- -D warnings
+    exit_code: 0
+  tests_passing: true
+actual:
+  elapsed_hours: 1
+  man_hours: 6
+  hitl_hours: 0
+  tokens_k: N/A
+  cost: N/A
+calibration_sampled_at: '2026-10-21T01:54:42Z'

@@ -86,10 +86,52 @@ repositories; message them.
 - A `CLAUDE.md` agent block (`/l3io-doctor` check 24 reports it missing).
 - Public visibility of the `liquidlogiclabs` Gitea org.
 
+## Feature: streaming passphrase encryption (0.2.0) — dual backends 2026-10-26
+
+Requested by `l3io-wordpress-backup` so it can supersede ADR-0006 and share one
+`age` format (backup AD-26 / AD-21). Upstream `pyrage` declined passphrase
+`encrypt_io` (woodruffw/pyrage#172); plan-4’s contribution path is abandoned.
+
+**Decision:** `passphrase=` on `encrypt`/`decrypt`/`dump`/`load` (mutually
+exclusive with recipients/identities) streams sole-scrypt age. Backends:
+
+- **binder (preferred):** sibling package `l3io-age-passphrase` (PyO3 / maturin)
+- **CLI fallback:** FiloSottile `age` ≥1.3 + `age-plugin-batchpass`, secret on
+  `AGE_PASSPHRASE_FD` (never argv)
+- Selection: `L3IO_AGE_PASSPHRASE_BACKEND=auto|binder|cli` (default `auto`)
+
+Recipients stay on stock PyPI `pyrage`. Images we own install the binder wheel
+and the official age tarball (includes the plugin). See ADR-0003.
+
+**Status:** dual-backend landed. Binder lives at
+https://github.com/ravensorb/l3io-age-passphrase (v0.1.0 GitHub Release with
+multi-platform wheels; PyPI not wired). Dev pin:
+`[tool.uv.sources] l3io-age-passphrase = { git = …, tag = "v0.1.0" }`
+(strip before publish). Docker/images should prefer the manylinux wheel URL
+from the release. Publish database 0.2.0 only once the binder is on a
+non-VCS index (or document wheel URL installs).
+
+**For backup (READY — 2026-10-27):** streaming passphrase is on `main` (pushed).
+Prefer package-root imports:
+
+```python
+from l3io.wp.database import (
+    encrypt, decrypt, check_passphrase, check_recipients, generate_identity,
+)
+```
+
+`passphrase=` is mutually exclusive with `recipients=` / `identities=`. Until
+database 0.2.0 is on an index, depend on this repo’s `main` with the
+`encryption` extra; install the binder wheel from
+https://github.com/ravensorb/l3io-age-passphrase/releases/tag/v0.1.0 in images.
+See ADR-0003 for `L3IO_AGE_PASSPHRASE_BACKEND`. Supersede backup ADR-0006 /
+AD-26 with this age path when you pick the work up.
+
 ## Requests to the family (spec §15)
 
-**`l3io-wordpress-backup`** — not yet delivered:
-- supersede ADR-0006 with `age` via `pyrage`;
+**`l3io-wordpress-backup`** — ready to consume passphrase streaming from this
+package; still not yet delivered on the backup side:
+- supersede ADR-0006 with `age` via this package’s `encryption` API (not raw pyrage);
 - move ownership of AD-7 and ADR-0003 (credentials to a subprocess) to this package,
   whose mechanism is the pipe option file;
 - Story 2.1 calls `dump`;

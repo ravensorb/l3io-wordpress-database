@@ -1,9 +1,13 @@
-"""Optional age encryption of dumps, through ``pyrage`` (extra ``encryption``).
+"""Optional age encryption of dumps (extra ``encryption``).
 
-The format is standard age, so any dump this package encrypts can be decrypted
-by the stock ``age`` command line. Errors are mapped to package types: a wrong
-identity is :class:`DecryptionError`; a damaged, truncated or non-age stream is
-:class:`CorruptDumpError` (probe V4). Secret identities never appear in messages.
+Recipients / identities go through ``pyrage``. Passphrase streaming uses
+``l3io-age-passphrase`` (preferred) or stock ``age`` with
+``age-plugin-batchpass`` (see ``L3IO_AGE_PASSPHRASE_BACKEND``). The format is
+standard age, so any dump this package encrypts can be decrypted by the stock
+``age`` command line. Errors are mapped to package types: a wrong identity or
+passphrase is :class:`DecryptionError`; a damaged, truncated or non-age stream
+is :class:`CorruptDumpError` (probe V4). Secret identities and passphrases
+never appear in messages.
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import IO, Any
 
+from . import _passphrase
 from .errors import CorruptDumpError, DecryptionError, InvalidArgumentsError, MissingDependencyError
 
 AGE_HEADER = b"age-encryption.org/v1"
@@ -89,16 +94,55 @@ def _identities(pyrage: Any, identities: Sequence[str]) -> list[Any]:
     return parsed
 
 
+def _mutex_secret(
+    named: str,
+    sequence: Sequence[str] | None,
+    passphrase: str | None,
+    *,
+    action: str,
+) -> None:
+    has_seq = sequence is not None
+    has_pass = passphrase is not None
+    if has_seq == has_pass:
+        if has_seq:
+            msg = f"supply {named}= or passphrase=, not both"
+        else:
+            msg = f"{action} needs {named}= or passphrase="
+        raise InvalidArgumentsError(msg)
+    if has_pass and passphrase == "":
+        msg = "passphrase must not be empty"
+        raise InvalidArgumentsError(msg)
+
+
 def check_recipients(recipients: Sequence[str]) -> None:
     """Refuse recipients :func:`encrypt` could not use, before any data moves."""
     _recipients(_pyrage(), recipients)
 
 
-def encrypt(reader: IO[bytes], writer: IO[bytes], recipients: Sequence[str]) -> None:
-    """Stream ``reader`` into ``writer`` as age, for every recipient."""
+def check_passphrase(passphrase: str) -> None:
+    """Refuse a passphrase :func:`encrypt` could not use, before any data moves."""
+    _passphrase.check_ready(passphrase)
+
+
+def encrypt(
+    reader: IO[bytes],
+    writer: IO[bytes],
+    recipients: Sequence[str] | None = None,
+    *,
+    passphrase: str | None = None,
+) -> None:
+    """Stream ``reader`` into ``writer`` as age.
+
+    Exactly one of ``recipients`` or ``passphrase``. Passphrase mode emits a
+    sole scrypt recipient (stock ``age -d``).
+    """
+    _mutex_secret("recipients", recipients, passphrase, action="encryption")
+    if passphrase is not None:
+        _passphrase.encrypt_io(reader, writer, passphrase)
+        return
     pyrage = _pyrage()
-    keys = _recipients(pyrage, recipients)
     try:
+        keys = _recipients(pyrage, recipients or ())
         pyrage.encrypt_io(reader, writer, keys)
     except pyrage.EncryptError as exc:
         # pyrage flattens the caller's I/O exception into text, e.g. "OSError: [Errno 28] ..."
@@ -107,16 +151,30 @@ def encrypt(reader: IO[bytes], writer: IO[bytes], recipients: Sequence[str]) -> 
         raise OSError(str(exc)) from exc
 
 
-def decrypt(reader: IO[bytes], writer: IO[bytes], identities: Sequence[str]) -> None:
-    """Stream an age ``reader`` into ``writer`` as plaintext."""
+def decrypt(
+    reader: IO[bytes],
+    writer: IO[bytes],
+    identities: Sequence[str] | None = None,
+    *,
+    passphrase: str | None = None,
+) -> None:
+    """Stream an age ``reader`` into ``writer`` as plaintext.
+
+    Exactly one of ``identities`` or ``passphrase``.
+    """
+    _mutex_secret("identities", identities, passphrase, action="decryption")
+    if passphrase is not None:
+        _passphrase.decrypt_io(reader, writer, passphrase)
+        return
     pyrage = _pyrage()
-    keys = _identities(pyrage, identities)
     try:
+        keys = _identities(pyrage, identities or ())
         pyrage.decrypt_io(reader, writer, keys)
     except BrokenPipeError:
         raise  # the consumer stopped reading; not a property of the stream
     except pyrage.DecryptError as exc:
-        if "No matching keys" in str(exc):
+        text = str(exc)
+        if "No matching keys" in text:
             msg = "none of the supplied identities can decrypt this dump"
             raise DecryptionError(msg) from exc
         msg = "the encrypted dump is damaged or not an age file"

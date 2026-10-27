@@ -37,7 +37,7 @@ WORDPRESS = Explicit("wpuser", SECRET)
 
 
 #: The only modules allowed to start processes; each call must pass env=.
-SPAWNERS = {"_client.py", "transfer.py"}
+SPAWNERS = {"_client.py", "transfer.py", "_passphrase.py"}
 
 
 def _subprocess_users() -> dict[str, ast.Module]:

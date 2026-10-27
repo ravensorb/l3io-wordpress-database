@@ -22,7 +22,13 @@ from .credentials import (
     Explicit,
     ResolvedCredentials,
 )
-from .encryption import generate_identity
+from .encryption import (
+    check_passphrase,
+    check_recipients,
+    decrypt,
+    encrypt,
+    generate_identity,
+)
 from .errors import (
     AccessDeniedError,
     AuthenticationFailedError,
@@ -133,11 +139,15 @@ __all__ = [
     "check_dump",
     "check_ensure",
     "check_load",
+    "check_passphrase",
+    "check_recipients",
     "check_revoke",
     "check_rotate_password",
+    "decrypt",
     "drop_database",
     "drop_user",
     "dump",
+    "encrypt",
     "ensure",
     "generate_identity",
     "inspect",

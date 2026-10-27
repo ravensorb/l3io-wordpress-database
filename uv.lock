@@ -399,6 +399,11 @@ wheels = [
 ]
 
 [[package]]
+name = "l3io-age-passphrase"
+version = "0.1.0"
+source = { git = "https://github.com/ravensorb/l3io-age-passphrase.git?tag=v0.1.0#ca083fe225291ff7aa83deddcf5b6b3d099c6960" }
+
+[[package]]
 name = "l3io-wordpress-config"
 version = "0.1.0"
 source = { git = "https://github.com/ravensorb/l3io-wordpress-config.git?tag=v0.1.0#9abeeb87314609bfa8a7e50fab60440268a0935a" }
@@ -417,6 +422,7 @@ aws = [
     { name = "boto3" },
 ]
 encryption = [
+    { name = "l3io-age-passphrase" },
     { name = "pyrage" },
 ]
 wpconfig = [
@@ -426,6 +432,7 @@ wpconfig = [
 [package.dev-dependencies]
 dev = [
     { name = "boto3" },
+    { name = "l3io-age-passphrase" },
     { name = "l3io-wordpress-config" },
     { name = "mypy" },
     { name = "opentelemetry-sdk" },
@@ -442,6 +449,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", marker = "extra == 'aws'", specifier = ">=1.34,<2" },
+    { name = "l3io-age-passphrase", marker = "extra == 'encryption'", git = "https://github.com/ravensorb/l3io-age-passphrase.git?tag=v0.1.0" },
     { name = "l3io-wordpress-config", marker = "extra == 'wpconfig'", git = "https://github.com/ravensorb/l3io-wordpress-config.git?tag=v0.1.0" },
     { name = "opentelemetry-api", specifier = ">=1.30,<2" },
     { name = "pymysql", extras = ["rsa"], specifier = ">=1.2,<2" },
@@ -453,6 +461,7 @@ provides-extras = ["aws", "encryption", "wpconfig"]
 [package.metadata.requires-dev]
 dev = [
     { name = "boto3", specifier = ">=1.34,<2" },
+    { name = "l3io-age-passphrase", git = "https://github.com/ravensorb/l3io-age-passphrase.git?tag=v0.1.0" },
     { name = "l3io-wordpress-config", git = "https://github.com/ravensorb/l3io-wordpress-config.git?tag=v0.1.0" },
     { name = "mypy", specifier = "==2.3.1" },
     { name = "opentelemetry-sdk", specifier = "==1.44.0" },

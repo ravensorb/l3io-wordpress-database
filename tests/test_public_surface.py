@@ -40,6 +40,10 @@ def test_transfer_surface_is_exported() -> None:
         "CorruptDumpError",
         "ClientTool",
         "generate_identity",
+        "encrypt",
+        "decrypt",
+        "check_recipients",
+        "check_passphrase",
     }
     assert names <= set(pkg.__all__), names - set(pkg.__all__)
 

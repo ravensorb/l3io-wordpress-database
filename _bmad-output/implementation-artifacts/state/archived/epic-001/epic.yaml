@@ -1,0 +1,38 @@
+_lock:
+  session_id: l3io-execute-1792547158
+  claimed_at: '2026-10-21T03:02:07Z'
+  ttl_minutes: 30
+key: 'E001'
+title: Upstream streaming passphrase in pyrage
+goal: 'Land streaming scrypt encrypt/decrypt in pyrage so a PyPI release unblocks this package.'
+status: done
+updated_at: '2026-10-21T03:02:16Z'
+estimate:
+  man_hours_low: 29.08
+  man_hours_high: 33.04
+  hitl_hours_low: 1.62
+  hitl_hours_high: 1.84
+  elapsed_hours_low: 9.7
+  elapsed_hours_high: 11.02
+  tokens_k_min: 680
+  tokens_k_max: 773
+  closure_ratios:
+    man_hours: 1.0
+    hitl_hours: 1.0
+    elapsed_hours: 1.0
+    tokens_k: 1.0
+  orchestration_ratios:
+    man_hours: 0
+    hitl_hours: 0
+    elapsed_hours: 0
+    tokens_k: 0
+  cost_low: 2.81
+  cost_high: 3.2
+  model: claude-opus-5
+  confidence: medium
+actual:
+  elapsed_hours: 2
+  man_hours: 8
+  hitl_hours: 0.2
+  tokens_k: N/A
+  cost: N/A

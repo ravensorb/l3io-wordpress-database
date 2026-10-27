@@ -254,7 +254,11 @@ def test_an_unbounded_requirement_is_caught() -> None:
 
 #: What each extra makes importable. Hand-kept, so the test below fails when an
 #: extra is added without deciding what a base install must not contain.
-EXTRA_IMPORTS = {"aws": "boto3", "wpconfig": "l3io.wp.config", "encryption": "pyrage"}
+EXTRA_IMPORTS: dict[str, tuple[str, ...]] = {
+    "aws": ("boto3",),
+    "wpconfig": ("l3io.wp.config",),
+    "encryption": ("pyrage", "l3io_age_passphrase"),
+}
 _EXTRA_LEG = re.compile(r"l3io-wordpress-database\[(\w+)\] @")
 
 
@@ -270,11 +274,10 @@ def test_every_extra_has_an_install_leg() -> None:
 
 
 def test_the_base_install_check_forbids_every_extras_import() -> None:
+    forbidden = [m for mods in EXTRA_IMPORTS.values() for m in mods]
     for path in (REPO_ROOT / "Makefile", WORKFLOWS / "ci.yml"):
         text = path.read_text(encoding="utf-8")
-        missing = [
-            m for m in EXTRA_IMPORTS.values() if f"'{m}'" not in text and f'"{m}"' not in text
-        ]
+        missing = [m for m in forbidden if f"'{m}'" not in text and f'"{m}"' not in text]
         assert not missing, f"{path.name}'s base-install check does not forbid {missing}"
 
 

@@ -350,7 +350,7 @@ jobs:
                  --with "$wheel" \
                  python - <<'PY'
           import importlib.util, sys
-          for forbidden in ("boto3", "botocore", "l3io.wp.config", "pyrage"):
+          for forbidden in ("boto3", "botocore", "l3io.wp.config", "pyrage", "l3io_age_passphrase"):
               if importlib.util.find_spec(forbidden) is not None:
                   sys.exit(f"AD-8 -- base install pulled {forbidden}")
           print("base install is clean")

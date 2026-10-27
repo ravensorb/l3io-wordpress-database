@@ -17,6 +17,7 @@ import os
 import sys
 from collections.abc import Mapping
 from enum import Enum, IntEnum
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -115,6 +116,16 @@ def _add_operation_options(
                 default=[],
                 help="age or SSH public key (repeatable)",
             )
+            p.add_argument(
+                "--passphrase-file",
+                metavar="PATH",
+                help="file holding the age passphrase (never pass the secret on argv)",
+            )
+            p.add_argument(
+                "--ask-passphrase",
+                action="store_true",
+                help="prompt on a terminal for the age passphrase",
+            )
         p.add_argument(
             "--option",
             action="append",
@@ -131,6 +142,16 @@ def _add_operation_options(
             "--identity-passphrase-env",
             metavar="VAR",
             help="variable holding the identity files' passphrase",
+        )
+        p.add_argument(
+            "--passphrase-file",
+            metavar="PATH",
+            help="file holding the age passphrase (never pass the secret on argv)",
+        )
+        p.add_argument(
+            "--ask-passphrase",
+            action="store_true",
+            help="prompt on a terminal for the age passphrase",
         )
         p.add_argument(
             "--replace", metavar="NAME", help="repeat the target's name to load over its tables"
@@ -279,6 +300,32 @@ def _identities(args: argparse.Namespace) -> list[str]:
     return [read_identity(path, passphrase) for path in args.identity]
 
 
+def _passphrase(args: argparse.Namespace) -> str | None:
+    """Age content passphrase from a file or a TTY prompt — never from argv."""
+    path = getattr(args, "passphrase_file", None)
+    ask = bool(getattr(args, "ask_passphrase", False))
+    if path is not None and ask:
+        msg = "supply --passphrase-file or --ask-passphrase, not both"
+        raise InvalidArgumentsError(msg)
+    if path is not None:
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except OSError as exc:
+            msg = f"cannot read the passphrase file {path!r}: {exc.strerror}"
+            raise InvalidArgumentsError(msg) from exc
+        secret = text.rstrip("\n")
+        if not secret:
+            msg = f"passphrase file {path!r} is empty"
+            raise InvalidArgumentsError(msg)
+        return secret
+    if ask:
+        if not sys.stdin.isatty():
+            msg = "no passphrase source: give --passphrase-file or run on a terminal"
+            raise CredentialsUnobtainableError(msg)
+        return getpass.getpass("age passphrase: ")
+    return None
+
+
 def _emit(value: Any, stream: Any = None) -> None:
     print(json.dumps(_jsonable(value), indent=2), file=stream or sys.stdout)
 
@@ -312,6 +359,7 @@ def _run(args: argparse.Namespace) -> int:
                 source=None if args.input == "-" else args.input,
                 replace=args.replace,
                 identities=_identities(args) or None,
+                passphrase=_passphrase(args),
                 options=args.option,
                 allow_unsandboxed=args.allow_unsandboxed,
             ),
@@ -370,11 +418,17 @@ def _run(args: argparse.Namespace) -> int:
         return Exit.OK
     if operation == "dump":
         target = sys.stdout.buffer if args.output == "-" else args.output
+        recipients = args.recipient or None
+        passphrase = _passphrase(args)
+        if recipients and passphrase is not None:
+            msg = "supply --recipient or a passphrase option, not both"
+            raise InvalidArgumentsError(msg)
         result = dump(
             connection,
             _wordpress(args, config),
             target,
-            recipients=args.recipient or None,
+            recipients=recipients,
+            passphrase=passphrase,
             options=args.option,
         )
         # With the dump on stdout, the result must not be mixed into it.
@@ -382,13 +436,19 @@ def _run(args: argparse.Namespace) -> int:
         return Exit.OK
     if operation == "load":
         source = sys.stdin.buffer if args.input == "-" else args.input
+        identities = _identities(args) or None
+        passphrase = _passphrase(args)
+        if identities and passphrase is not None:
+            msg = "supply --identity or a passphrase option, not both"
+            raise InvalidArgumentsError(msg)
         _emit(
             load(
                 connection,
                 _wordpress(args, config),
                 source,
                 replace=args.replace,
-                identities=_identities(args) or None,
+                identities=identities,
+                passphrase=passphrase,
                 options=args.option,
                 allow_unsandboxed=args.allow_unsandboxed,
             )

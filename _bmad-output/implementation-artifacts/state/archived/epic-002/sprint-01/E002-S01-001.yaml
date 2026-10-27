@@ -1,0 +1,45 @@
+key: 'E002-S01-001'
+epic: 'E002'
+sprint: 'S01'
+title: Stream encrypt/decrypt with passphrase= on the public API
+classification: complex
+status: done
+updated_at: '2026-10-21T03:05:00Z'
+depends_on:
+- 'E001-S01-002'
+estimate:
+  man_hours: 15.0
+  hitl_hours: 0.81
+  elapsed_hours: 5.0
+  tokens_k:
+    total: 350
+    input: 52
+    output: 18
+    cache_write: 105
+    cache_read: 175
+  cost: 1.45
+  model: claude-opus-5
+  fix_factor: 1.25
+  scope_ratios:
+    man_hours: 1.0
+    hitl_hours: 1.0
+    elapsed_hours: 1.0
+    tokens_k: 1.0
+  confidence: medium
+completion_evidence:
+  fix_iterations: 0
+  files_changed: 4
+  notes: passphrase= on encrypt/decrypt/check_passphrase; root re-exports; tests green under git-pinned pyrage
+  test_runs:
+  - command: make check
+    exit_code: 0
+  - command: make check
+    exit_code: 0
+  tests_passing: true
+actual:
+  elapsed_hours: 0.75
+  man_hours: 5
+  hitl_hours: 0.1
+  tokens_k: N/A
+  cost: N/A
+calibration_sampled_at: '2026-10-21T03:05:00Z'

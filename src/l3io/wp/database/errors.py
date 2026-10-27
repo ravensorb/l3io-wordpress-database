@@ -159,7 +159,7 @@ class TransferError(DatabaseError):
 
 
 class DecryptionError(DatabaseError):
-    """None of the supplied identities can decrypt the source."""
+    """None of the supplied identities or the passphrase can decrypt the source."""
 
 
 class CorruptDumpError(DatabaseError):

@@ -16,7 +16,14 @@ export PATH=/tmp/uvbin:$PATH UV_PROJECT_ENVIRONMENT=/tmp/venv UV_CACHE_DIR=/tmp/
 export UV_PYTHON=3.11 PYTHONDONTWRITEBYTECODE=1
 git config --global --add safe.directory /repo
 cd /repo
-uv sync --locked --all-extras --dev -q
+# Server images have no C compiler. The host prebuilds l3io-age-passphrase
+# (path-pinned sibling) and mounts it at L3IO_AGE_PASSPHRASE_WHEEL.
+if [ -n "${L3IO_AGE_PASSPHRASE_WHEEL:-}" ] && [ -f "${L3IO_AGE_PASSPHRASE_WHEEL}" ]; then
+  uv sync --locked --all-extras --dev -q --no-install-package l3io-age-passphrase
+  uv pip install --python "$UV_PROJECT_ENVIRONMENT" --force-reinstall "${L3IO_AGE_PASSPHRASE_WHEEL}"
+else
+  uv sync --locked --all-extras --dev -q
+fi
 
 for _ in $(seq 1 90); do
   if uv run --no-sync python -c "import os, pymysql; pymysql.connect(host=os.environ['DB_HOST'], port=int(os.environ['DB_PORT']), user='root', password='root').close()" 2>/dev/null; then

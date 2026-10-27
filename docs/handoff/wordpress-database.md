@@ -131,9 +131,10 @@ is the admin overview; this is a targeted options read for backup/relocation):
 class SiteUrls:
     """Values from `{prefix}options`, never constant overrides."""
 
-    siteurl: str | None   # None ⇒ option row absent (table present)
+    siteurl: str | None  # None ⇒ option row absent (table present)
     home: str | None
     options_table_present: bool  # False ⇒ `{prefix}options` missing; both URLs None
+
 
 def site_urls(
     connection: Connection,

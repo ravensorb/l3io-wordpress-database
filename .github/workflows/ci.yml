@@ -212,15 +212,26 @@ jobs:
     # in that engine's own image (probe V3). The tests run in a second
     # container of the server image, started by `make test-transfer`, so the
     # same command runs here, under act, and on a developer's machine.
+    #
+    # No `services:` block: the job binds host port TRANSFER_PORT (33399) from
+    # inside the step via `docker run -p`. That is not allocated up front by
+    # act, and `make ci`'s ACT_FLAGS include `--concurrent-jobs 1`, so legs run
+    # one at a time and the Makefile trap removes the container on exit. The
+    # engine axis is therefore NOT collapsed under LOCAL_ACT — collapsing would
+    # be a speed choice, not a forced one. A bare `act` without
+    # --concurrent-jobs 1 would collide on 33399; that is why Makefile pins it.
     name: transfer · ${{ matrix.engine }}
     runs-on: ubuntu-latest
     needs: [static]
     strategy:
       fail-fast: false
       matrix:
-        engine: >-
-          ${{ vars.LOCAL_ACT && fromJSON('["mysql:8.4"]')
-              || fromJSON('["mysql:8.0","mysql:8.4","mysql:9.7","mariadb:10.2","mariadb:11.4"]') }}
+        engine: ['mysql:8.0', 'mysql:8.4', 'mysql:9.7', 'mariadb:10.2', 'mariadb:11.4']
+    # Declares a host port this job binds outside of `services:`, so the family
+    # CI/CD checker can treat it like a service port if a future collapse is
+    # reintroduced. Value matches Makefile TRANSFER_PORT.
+    env:
+      L3IO_ACT_HOST_PORTS: '33399'
     steps:
       - uses: actions/checkout@v7
         with: { fetch-depth: 0 }  # hatch-vcs needs tags; shallow yields 0.1.devN
@@ -294,10 +305,11 @@ jobs:
     needs: [build]
     strategy:
       fail-fast: false
+      # No services and no host-port bind: under act this job only builds and
+      # installs a wheel. Collapsing Python under LOCAL_ACT is not justified
+      # (F1.4); replay all four versions locally the same way GitHub does.
       matrix:
-        python: >-
-          ${{ vars.LOCAL_ACT && fromJSON('["3.11"]')
-              || fromJSON('["3.11","3.12","3.13","3.14"]') }}
+        python: ['3.11', '3.12', '3.13', '3.14']
     env:
       UV_PROJECT_ENVIRONMENT: /tmp/l3io-venv-verify-${{ matrix.python }}
       # Outside the working tree, as in the build job. Inside it, a wheel left

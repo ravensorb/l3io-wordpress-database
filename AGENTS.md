@@ -76,3 +76,7 @@ Python 3.11+, uv, ruff, mypy --strict, PyMySQL. The spec and plans live in
 - `pyrage` is also git-pinned under `[tool.uv.sources]` (fork tip with
   `passphrase.encrypt_io` / `decrypt_io`) until upstream PyPI ships those APIs.
   Same strip-before-publish rule as config; see handoff 0.2.0 feature section.
+- Act collapse (F1.4): only the `test` job collapses under `vars.LOCAL_ACT`
+  (services on 3306). `verify-install` and `transfer` keep the full matrix;
+  transfer binds host `33399` from the step and relies on `--concurrent-jobs 1`
+  (declared as job env `L3IO_ACT_HOST_PORTS`).
